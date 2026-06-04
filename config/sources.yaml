@@ -1,0 +1,50 @@
+sources:
+  # === Польские: финансы и регулирование ===
+  - name: bankier_rss
+    kind: rss
+    url: https://www.bankier.pl/rss/wiadomosci.xml
+    enabled: true
+    poll_interval_seconds: 1800
+
+  - name: money_pl_rss
+    kind: rss
+    url: https://www.money.pl/rss/wiadomosci.xml
+    enabled: true
+    poll_interval_seconds: 1800
+
+  - name: rzeczpospolita_ekonomia
+    kind: rss
+    url: https://www.rp.pl/rss/3
+    enabled: true
+    poll_interval_seconds: 3600
+
+  - name: nbp_rss
+    kind: rss
+    url: https://www.nbp.pl/rss/news_pl.xml
+    enabled: false                      
+    poll_interval_seconds: 3600
+
+  # === Украинские (русскоязычные) ===
+  - name: ukrpravda_ru
+    kind: rss
+    url: https://www.pravda.com.ua/rus/rss/
+    enabled: true
+    poll_interval_seconds: 1800
+
+  - name: nv_ua
+    kind: rss
+    url: https://nv.ua/rss/all.xml
+    enabled: true
+    poll_interval_seconds: 1800
+
+  # === EU policy и геополитика ===
+  - name: politico_eu
+    kind: rss
+    url: https://www.politico.eu/feed/
+    enabled: true
+    poll_interval_seconds: 3600
+
+  - name: euractiv
+    kind: rss
+    url: https://www.euractiv.com/feed/
+    enabled: false

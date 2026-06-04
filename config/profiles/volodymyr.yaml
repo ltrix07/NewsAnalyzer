@@ -1,0 +1,32 @@
+profile:
+  name: volodymyr
+  location: "PL (Warsaw)"
+  citizenship: UA
+  languages: [ru, uk, pl, en]
+  output_language: ru
+
+  interests:
+  - "Ukrainian residence and visa status in EU/PL, immigration policy"
+  - "Polish labor and tax law for foreigners, demographic policy affecting foreign workforce"
+  - "Macroeconomic factors affecting EUR, USD, PLN, UAH: monetary policy, inflation, trade balances, GDP, fiscal decisions"
+  - "Algorithmic trading regulations: KNF, ESMA, MiFID, MiFIR, market structure rules"
+  - "Geopolitics affecting the UA-PL corridor and EU eastern flank: NATO posture, nuclear deterrence, defense industry, US-EU-RU dynamics"
+  - "Major EU policy decisions: regulations, sanctions, energy policy, defense budgets"
+
+  not_interested:
+    - "Local cultural events and festivals"
+    - "Sports and esports"
+    - "Celebrity and gossip"
+    - "Routine weather coverage"
+
+  keyword_rules:
+    keep_if_matches:
+      - "(?i)\\b(Ukrain[a-zе]*|Україн[а-я]+|українц)"
+      - "(?i)\\b(NBP|KNF|ECB|Federal Reserve|MiFID|ESMA)\\b"
+      - "(?i)\\b(visa|residence|pobyt|karta pobytu)\\b"
+      - "(?i)\\b(EUR|USD|PLN|UAH|FX|stop[ay] proc)"
+    drop_if_matches:
+      - "(?i)\\b(football|piłka nożna|soccer|baseball)\\b"
+      - "(?i)\\b(celebrity|gossip|plotki)\\b"
+      - "(?i)\\b(concert|koncert|festival|festyn)\\b"
+      - "^(THE HACK|FIREPOWER|VOLTAGE|HARVEST|FIRST AID|RED THREAD|VOICES|THE BRIEF):"

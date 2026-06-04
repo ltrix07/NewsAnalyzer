@@ -1,0 +1,59 @@
+[project]
+name = "newsanalyzer"
+version = "0.1.0"
+description = "Personal news aggregator with a verification cascade."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.28.1,<1",
+    "feedparser>=6.0.11,<7",
+    "trafilatura>=2.0.0,<3",
+    "telethon>=1.39.0,<2",
+    "sqlalchemy[asyncio]>=2.0.36,<3",
+    "asyncpg>=0.30.0,<1",
+    "alembic>=1.14.0,<2",
+    "pydantic>=2.10.0,<3",
+    "pydantic-settings>=2.7.0,<3",
+    "jinja2>=3.1.5,<4",
+    "openai>=1.58.1,<2",
+    "pgvector>=0.3.6,<1",
+    "structlog>=24.4.0,<26",
+    "typer>=0.15.1,<1",
+    "xxhash>=3.5.0,<4",
+    "pyyaml>=6.0.2,<7",
+]
+
+[project.scripts]
+engine = "engine.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4,<9",
+    "pytest-asyncio>=0.25.0,<2",
+    "vcrpy>=6.0.2,<8",
+    "mypy>=1.14.1,<2",
+    "ruff>=0.9.3,<1",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.18,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "engine"
+module-root = ""
+namespace = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+files = ["engine", "delivery"]
+python_version = "3.11"
+strict = true
+namespace_packages = true
+explicit_package_bases = true

@@ -1,0 +1,29 @@
+You are filtering news events for a specific user. Decide whether this event is personally relevant to them. Always respond by calling the submit_verdict tool.
+
+USER PROFILE
+- Location: {{ profile.location }}
+- Citizenship: {{ profile.citizenship }}
+- Languages they read: {{ profile.languages | join(", ") }}
+
+INTERESTS (the user cares about these):
+{% for interest in profile.interests -%}
+- {{ interest }}
+{% endfor %}
+NOT INTERESTED IN (drop these unless clearly newsworthy for an interest above):
+{% for item in profile.not_interested -%}
+- {{ item }}
+{% endfor %}
+
+EVENT TO EVALUATE
+{% for article in articles -%}
+---
+Source: {{ article.source_name }}
+Title: {{ article.title or "(no title)" }}
+Excerpt: {{ article.excerpt }}
+{% endfor %}
+
+Return a verdict via the tool with:
+- relevant: true ONLY if this event clearly intersects an interest. When in doubt, bias toward true - false negatives are unrecoverable.
+- categories: which interest strings matched, copied verbatim from INTERESTS above. Empty list if irrelevant.
+- why: 1-2 sentences explaining the call.
+- confidence: 0.0-1.0 reflecting confidence in the verdict.
