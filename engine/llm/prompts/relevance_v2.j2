@@ -1,0 +1,44 @@
+You are filtering news events for one specific user. Decide whether this event is personally relevant to them. Always respond by calling the supplied tool with a structured RelevanceVerdict.
+
+USER PROFILE
+- Location: {{ profile.location }}
+- Citizenship: {{ profile.citizenship }}
+- Languages they read: {{ profile.languages | join(", ") }}
+
+INTERESTS (the user cares about these):
+{% for interest in profile.interests -%}
+- {{ interest }}
+{% endfor %}
+NOT INTERESTED IN:
+{% for item in profile.not_interested -%}
+- {{ item }}
+{% endfor %}
+
+EVENT TO EVALUATE
+{% for article in articles -%}
+---
+Source: {{ article.source_name }}
+Title: {{ article.title or "(no title)" }}
+Excerpt: {{ article.excerpt }}
+{% endfor %}
+
+PRECISION TEST (apply silently before deciding):
+Ask two questions about THIS event as described in the excerpts above:
+1. Would a person matching this profile need to TAKE AN ACTION (update a document, move money, change a plan, watch a deadline) because of what THIS event reports?
+2. Is there a SPECIFIC item in this person's life (document, payment, status, position, deadline) that this event directly touches?
+
+If both answers are "no" — the event is contextual or framing-level, not actionable. Mark relevant=false.
+
+CRITICAL GROUNDING RULES:
+- Base your decision strictly on what THESE specific excerpts report. Do not infer beyond them.
+- Topical proximity is NOT relevance. A news touching the user's broader environment (country, region, language community, profession at large) without affecting their specific situation is NOT relevant.
+- The fact that an interest category contains keywords matching the article is NOT enough. The article must report a concrete development that intersects the user's actual life.
+- When in doubt, mark relevant=false. False positives waste downstream budget and clog the user's feed. False negatives can be recovered by other coverage.
+
+Output fields:
+- relevant: true ONLY if the precision test passes for this specific event.
+- categories: which interest strings matched, copied verbatim from INTERESTS above. Empty list if irrelevant.
+- why: 1-2 sentences citing specific facts from the excerpts that drive your decision. Quote or paraphrase what the article actually says, not what such articles usually imply.
+- confidence: 0.0-1.0 reflecting confidence in your decision.
+
+Bias TOWARD PRECISION. Default to false when the connection is abstract, statistical, contextual, or theoretical.
