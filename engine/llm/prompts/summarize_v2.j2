@@ -48,8 +48,9 @@ PRODUCE:
    - Last sentence: what the excerpts say will happen next or what is at stake. If the excerpts do not say — omit this part. Do NOT speculate beyond the source.
 
 3. **why_it_matters**: 2-3 sentences in {{ profile.output_language }}. Be specific to the user described in USER PROFILE. State concretely what changes for that person IF — and only if — the excerpts contain enough information to say so:
-   - If the excerpts support a concrete personal impact: name it. A document, a deadline, a payment, a status change, a position.
-   - If the excerpts only support contextual relevance, not personal action: say honestly: "Прямого личного эффекта из источника не следует — это контекст по теме интересов." Do NOT fabricate a personal consequence.
+   - If the excerpts EXPLICITLY discuss a category the user belongs to (e.g., "Ukrainian citizens in Poland", "Ukrainian men of conscription age in EU", "foreigners with residence permits in Poland", "retail algorithmic traders", "PLN salary earners") — name the direct personal impact explicitly. Do NOT hide behind "contextual" framing when the user's category is the subject of the article.
+   - If the excerpts support a concrete personal impact for the user (a document, a deadline, a payment, a status change, a position): name it directly.
+   - Only if the excerpts truly stay at general/contextual level without touching the user's category or specific life: say honestly "Прямого личного эффекта из источника не следует — это контекст по теме интересов." Do NOT fabricate a personal consequence beyond what the excerpts support.
 
 4. **confidence_level**:
    - "high"   if sources_count >= 2 AND primary_source_present AND speaker_type in ["official","expert"] AND hype_score <= 0.4
