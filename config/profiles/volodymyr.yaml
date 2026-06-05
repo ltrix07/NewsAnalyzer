@@ -6,18 +6,30 @@ profile:
   output_language: ru
 
   interests:
-  - "Ukrainian residence and visa status in EU/PL, immigration policy"
-  - "Polish labor and tax law for foreigners, demographic policy affecting foreign workforce"
-  - "Macroeconomic factors affecting EUR, USD, PLN, UAH: monetary policy, inflation, trade balances, GDP, fiscal decisions"
-  - "Algorithmic trading regulations: KNF, ESMA, MiFID, MiFIR, market structure rules"
-  - "Geopolitics affecting the UA-PL corridor and EU eastern flank: NATO posture, nuclear deterrence, defense industry, US-EU-RU dynamics"
-  - "Major EU policy decisions: regulations, sanctions, energy policy, defense budgets"
+    - "Karta pobytu and residence/work permits for Ukrainians in Poland — RULE CHANGES only, not statistics or commentary"
+    - "Temporary protection for Ukrainians in EU — extensions, modifications, expiration timelines"
+    - "Polish tax/labor law changes affecting foreign workers specifically (not general Polish workforce)"
+    - "Ukrainian mobilization rules affecting citizens abroad: status, return obligations, draft notices"
+
+    - "NBP interest rate decisions and their immediate effect on PLN, mortgages, deposits"
+    - "PLN-UAH exchange rate movements affecting remittances and savings"
+    - "Polish inflation prints that change cost of living for residents"
+
+    - "KNF, ESMA, MiFID regulatory changes affecting retail algorithmic trading rules, leverage, instruments"
+    - "Specific broker policy changes or instrument restrictions in EU jurisdictions"
+
+    - "Direct UA-PL bilateral developments: border, military aid, refugee policy coordination"
+    - "Direct security threats to Polish territory (not abstract NATO posture)"
 
   not_interested:
-    - "Local cultural events and festivals"
-    - "Sports and esports"
-    - "Celebrity and gossip"
-    - "Routine weather coverage"
+    - "General Polish domestic politics and demographics NOT specifically about foreigners"
+    - "Migration/visa policy for non-Ukrainian citizens (Russians, Belarusians, others)"
+    - "Macro news without direct personal cost-of-living or trading impact"
+    - "Abstract EU diplomacy: UN seats, summit statements, ministerial photo ops"
+    - "Global market panics without specific Polish actionability"
+    - "Polish elections horse-race / poll movements (unless about migration policy)"
+    - "Defense industry / NATO posture stories without immediate territorial implications"
+    - "Sports, celebrity, weather, festivals, lifestyle"
 
   keyword_rules:
     keep_if_matches:

@@ -41,7 +41,7 @@ class SummarizeStage(Stage[VerifiedEventDTO, DigestDTO]):
     """Produce and persist one user-facing digest for a verified event."""
 
     name = "summarize"
-    version = "v1"
+    version = "v2"
 
     def __init__(self, llm_client: LLMClient, profile: Profile, model: str) -> None:
         self.llm_client = llm_client
@@ -53,7 +53,7 @@ class SummarizeStage(Stage[VerifiedEventDTO, DigestDTO]):
 
         articles = await load_event_articles(ctx.session, item.event.id)
         rendered_prompt = render_prompt(
-            "summarize_v1.j2",
+            "summarize_v2.j2",
             profile=self.profile,
             articles=articles,
             verdict=item.verdict,
