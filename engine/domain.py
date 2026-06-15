@@ -119,6 +119,32 @@ class Digest(BaseModel):
     delivered_at: datetime | None
 
 
+class DigestFeedback(BaseModel):
+    """DTO for one append-only digest feedback row."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    digest_id: int
+    chat_id: int
+    feedback: Literal["like", "dislike"]
+    created_at: datetime
+
+
+class Impression(BaseModel):
+    """DTO for one outbound digest impression."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    digest_id: int
+    event_id: int
+    profile_name: str
+    chat_id: int
+    shown_at: datetime
+    context: dict[str, Any] | None
+
+
 class Decision(BaseModel):
     """DTO for an append-only stage decision record."""
 
@@ -128,7 +154,7 @@ class Decision(BaseModel):
     run_id: UUID
     stage_name: str
     stage_version: str
-    target_type: Literal["article", "event", "digest", "source"]
+    target_type: Literal["article", "event", "digest", "source", "discussion"]
     target_id: int
     model: str | None
     input_tokens: int | None

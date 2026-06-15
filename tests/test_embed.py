@@ -105,7 +105,12 @@ async def test_embed_stage_persists_embeddings_and_decisions(db_session: AsyncSe
     assert [result.draft.decision_json["action"] for result in results] == ["embedded"] * 3
     assert len(stored_embeddings) == 3
     assert len(stored_decisions) == 3
-    assert list(stored_embeddings[0].vector) == [5.0] * fake_embedder.dimensions
+    # EmbedStage v2 embeds the title-led input "<title>\n\n<body>", and FakeEmbedder
+    # encodes a vector as the input length, so a1 -> len("Title a1\n\nalpha").
+    expected_first_input = "Title a1\n\nalpha"
+    assert list(stored_embeddings[0].vector) == [float(len(expected_first_input))] * (
+        fake_embedder.dimensions
+    )
     assert sum((decision.cost_usd or Decimal("0")) for decision in stored_decisions) == Decimal(
         "0.000900"
     )
@@ -159,7 +164,8 @@ async def test_embed_stage_records_truncation_metadata(db_session: AsyncSession)
 
     assert result.draft.decision_json["truncated"] is True
     assert result.draft.decision_json["original_length"] == 25
-    assert stage.embedder.seen_batches == [["x" * 10]]
+    # v2 embeds the title-led input truncated to max_chars: "Title c1\n\n" is 10 chars.
+    assert stage.embedder.seen_batches == [["Title c1\n\n"]]
 
 
 @pytest.mark.asyncio

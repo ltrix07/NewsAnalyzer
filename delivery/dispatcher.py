@@ -10,10 +10,12 @@ from sqlalchemy import Select, select
 
 from delivery.client import TelegramBotClient
 from delivery.formatter import format_digest
+from delivery.keyboards import build_digest_keyboard
 from engine.config import get_settings
 from engine.db import session_scope
 from engine.domain import Digest as DigestDTO
 from engine.models import Digest as DigestModel
+from engine.models import Impression
 
 logger = structlog.get_logger(__name__)
 
@@ -55,7 +57,11 @@ async def deliver_pending(limit: int | None = None) -> DeliveryReport:
             digest = DigestDTO.model_validate(digest_model)
             try:
                 message = format_digest(digest)
-                await client.send_message(chat_id, message)
+                await client.send_message(
+                    chat_id,
+                    message,
+                    reply_markup=build_digest_keyboard(digest_model.id),
+                )
             except Exception:
                 report.failed += 1
                 logger.exception(
@@ -66,6 +72,15 @@ async def deliver_pending(limit: int | None = None) -> DeliveryReport:
                 continue
 
             digest_model.delivered_at = datetime.now(UTC)
+            session.add(
+                Impression(
+                    digest_id=digest_model.id,
+                    event_id=digest_model.event_id,
+                    profile_name=digest_model.profile_name,
+                    chat_id=chat_id,
+                    context=None,
+                )
+            )
             await session.flush()
             report.sent += 1
 

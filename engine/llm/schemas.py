@@ -53,3 +53,9 @@ class DigestPayload(BaseModel):
     confidence_level: Literal["high", "medium", "low"]
     caveats: list[str]
     citations: list[Citation]
+
+
+class DiscussionReply(BaseModel):
+    """Grounded single-turn answer for a digest discussion."""
+
+    answer: str

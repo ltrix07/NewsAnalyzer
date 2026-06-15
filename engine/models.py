@@ -15,6 +15,7 @@ from uuid import UUID
 from pgvector.sqlalchemy import Vector  # type: ignore[import-untyped]
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -200,6 +201,73 @@ class Digest(Base):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     event: Mapped[Event] = relationship(back_populates="digests")
+
+
+class DigestFeedback(Base):
+    """Append-only explicit feedback on one delivered digest."""
+
+    __tablename__ = "digest_feedback"
+    __table_args__ = (
+        CheckConstraint("feedback in ('like', 'dislike')", name="ck_digest_feedback_feedback"),
+        Index(
+            "ix_digest_feedback_digest_chat_created",
+            "digest_id",
+            "chat_id",
+            text("created_at DESC"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    digest_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("digests.id"), nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    feedback: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
+
+
+class Impression(Base):
+    """Append-only record that a digest was shown to the configured chat."""
+
+    __tablename__ = "impressions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    digest_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("digests.id"), nullable=False)
+    event_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("events.id"), nullable=False)
+    profile_name: Mapped[str] = mapped_column(String, nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    shown_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
+    context: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+
+class DiscussionPending(Base):
+    """Current chat-to-digest discussion target awaiting the user's question."""
+
+    __tablename__ = "discussion_pending"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    digest_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
+
+
+class TelegramCursor(Base):
+    """Single-row cursor for Telegram long-poll update acknowledgement."""
+
+    __tablename__ = "telegram_cursor"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_telegram_cursor_singleton"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_update_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
 class Decision(Base):

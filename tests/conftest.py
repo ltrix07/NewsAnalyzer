@@ -17,7 +17,19 @@ from sqlalchemy.pool import NullPool
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from engine.config import get_settings
-from engine.models import Article, Decision, Digest, Embedding, Event, EventMember, Source
+from engine.models import (
+    Article,
+    Decision,
+    Digest,
+    DigestFeedback,
+    DiscussionPending,
+    Embedding,
+    Event,
+    EventMember,
+    Impression,
+    Source,
+    TelegramCursor,
+)
 
 
 @pytest_asyncio.fixture
@@ -41,7 +53,19 @@ async def db_session() -> AsyncIterator[AsyncSession]:
                 session = session_factory()
 
                 try:
-                    for model in (EventMember, Digest, Embedding, Article, Event, Source, Decision):
+                    for model in (
+                        TelegramCursor,
+                        DiscussionPending,
+                        DigestFeedback,
+                        Impression,
+                        EventMember,
+                        Digest,
+                        Embedding,
+                        Article,
+                        Event,
+                        Source,
+                        Decision,
+                    ):
                         await session.execute(delete(model))
                     await session.flush()
                     yield session

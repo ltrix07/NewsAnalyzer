@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     openai_model_relevance: str = "gpt-4o-mini"
     openai_model_verify: str = "gpt-4o"
     openai_model_summarize: str = "gpt-4o"
+    telegram_long_poll_seconds: int = 25
+    discussion_model: str = "gpt-4o-mini"
 
     def require_database_url(self) -> str:
         """Return the configured database URL or raise a clear runtime error."""

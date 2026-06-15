@@ -69,6 +69,12 @@ def _truncate_text(text: str, max_length: int) -> str:
     return stripped[: max_length - 3].rstrip() + "..."
 
 
+def truncate_telegram_message(text: str) -> str:
+    """Trim arbitrary Telegram text to the platform message limit."""
+
+    return _truncate_text(text, MAX_TELEGRAM_MESSAGE_LENGTH)
+
+
 def _build_message(
     *,
     labels: dict[str, str],

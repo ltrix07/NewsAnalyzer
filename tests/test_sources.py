@@ -110,11 +110,15 @@ def test_register_source_builds_instance_from_config() -> None:
 
 
 def test_load_sources_config_reads_bundled_template() -> None:
-    """The bundled sources template should parse as two disabled sources."""
+    """The bundled sources config should parse into well-formed, uniquely named sources."""
 
     config_path = Path(__file__).resolve().parents[1] / "config" / "sources.yaml"
     configs = load_sources_config(config_path)
 
-    assert len(configs) == 2
-    assert [config.enabled for config in configs] == [False, False]
-    assert [config.kind for config in configs] == ["rss", "telegram"]
+    assert configs, "bundled sources.yaml should not be empty"
+    names = [config.name for config in configs]
+    assert len(names) == len(set(names)), "source names must be unique"
+    assert all(config.kind in {"rss", "telegram", "html", "api"} for config in configs)
+    assert all(config.poll_interval_seconds > 0 for config in configs)
+    assert all(isinstance(config.enabled, bool) for config in configs)
+    assert "bankier_rss" in names
