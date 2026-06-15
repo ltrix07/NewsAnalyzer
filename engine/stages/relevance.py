@@ -16,7 +16,7 @@ class RelevanceStage(Stage[EventDTO, ScoredEventDTO]):
     """Score post-filter events for personal relevance using OpenAI."""
 
     name = "relevance"
-    version = "v2"
+    version = "v3"
 
     def __init__(self, llm_client: LLMClient, profile: Profile, model: str) -> None:
         self.llm_client = llm_client
@@ -28,7 +28,7 @@ class RelevanceStage(Stage[EventDTO, ScoredEventDTO]):
 
         articles = await load_event_articles(ctx.session, event.id)
         rendered_prompt = render_prompt(
-            "relevance_v2.j2",
+            "relevance_v3.j2",
             profile=self.profile,
             articles=articles,
         )
