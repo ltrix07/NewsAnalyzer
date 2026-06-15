@@ -1,35 +1,26 @@
 -- ============================================================
--- newsAnalyzer week-1 audit
--- Цель: оценить, не зарезали ли фильтры что-то важное.
--- Запускать через: psql $DATABASE_URL -f week1_audit.sql
--- Или блоками вручную через psql и копировать output сюда.
+-- newsAnalyzer week-1 audit (v2 — поправлено под фактическую схему)
+-- Запускать: sudo -u postgres psql -d news_analyzer -f audit/week1_audit.sql
 -- ============================================================
 
 
 -- ============================================================
--- БЛОК 0. Проверка схемы (выполнить ОДИН РАЗ перед остальными)
--- Цель: убедиться, что имена колонок совпадают с тем, что я
--- использую ниже. Если расходятся — править запросы под фактические.
+-- БЛОК 0. Схема — для контроля
 -- ============================================================
 
-\echo '=== decisions ==='
-\d decisions
-\echo '=== digests ==='
-\d digests
-\echo '=== events ==='
-\d events
-\echo '=== articles ==='
-\d articles
+\echo '=== sources ==='
+\d sources
+\echo '=== event_members ==='
+\d event_members
 
 
 -- ============================================================
 -- БЛОК 1. Воронка по стадиям за последние 8 дней
--- Что искать: на какой стадии происходит самый большой
--- "обрыв" — где из X сущностей дальше идёт <1%.
 -- ============================================================
 
+\echo '=== БЛОК 1: воронка по стадиям ==='
 SELECT
-    stage,
+    stage_name,
     stage_version,
     COUNT(*)                                                           AS decisions_total,
     COUNT(*) FILTER (WHERE decision_json->>'action' IS NOT NULL)       AS with_action,
@@ -37,9 +28,9 @@ SELECT
     ROUND(SUM(cost_usd)::numeric, 4)                                   AS total_cost_usd
 FROM decisions
 WHERE created_at >= now() - interval '8 days'
-GROUP BY stage, stage_version
+GROUP BY stage_name, stage_version
 ORDER BY
-    CASE stage
+    CASE stage_name
         WHEN 'ingest'        THEN 1
         WHEN 'embed'         THEN 2
         WHEN 'cluster'       THEN 3
@@ -53,63 +44,58 @@ ORDER BY
 
 -- ============================================================
 -- БЛОК 2. Action-распределение на каждой стадии
--- Что искать: процент "rejected" / "skipped" / "passed".
--- Если на relevance 99% отвергнуто — фильтр слишком жёсткий.
 -- ============================================================
 
+\echo '=== БЛОК 2: action по стадиям ==='
 SELECT
-    stage,
+    stage_name,
     decision_json->>'action'   AS action,
     COUNT(*)                   AS n,
     ROUND(100.0 * COUNT(*)
-          / SUM(COUNT(*)) OVER (PARTITION BY stage), 1) AS pct
+          / SUM(COUNT(*)) OVER (PARTITION BY stage_name), 1) AS pct
 FROM decisions
 WHERE created_at >= now() - interval '8 days'
-GROUP BY stage, decision_json->>'action'
-ORDER BY stage, n DESC;
+GROUP BY stage_name, decision_json->>'action'
+ORDER BY stage_name, n DESC;
 
 
 -- ============================================================
--- БЛОК 3. Sample отказов на RELEVANCE — главное!
--- 30 случайных отвергнутых событий с рационалом модели и
--- одним примером статьи. Прочитать руками — есть ли среди
--- них что-то, что должно было пройти.
+-- БЛОК 3. Sample отказов на RELEVANCE — главное
 -- ============================================================
 
+\echo '=== БЛОК 3: 30 случайных relevance-отказов ==='
 SELECT
-    d.created_at::date                      AS day,
-    d.target_id                             AS event_id,
-    d.decision_json->>'why'                 AS model_rationale,
-    d.decision_json->>'confidence'          AS confidence,
-    d.decision_json->'categories'           AS matched_categories,
-    LEFT(a.title, 120)                      AS article_title,
-    a.source_name,
-    a.url
+    d.created_at::date                  AS day,
+    d.target_id                         AS event_id,
+    d.decision_json->>'why'             AS model_rationale,
+    d.decision_json->>'confidence'      AS confidence,
+    d.decision_json->'categories'       AS matched_categories,
+    LEFT(art.title, 120)                AS article_title,
+    art.source_name,
+    art.url
 FROM decisions d
-JOIN events e ON e.id = d.target_id
 LEFT JOIN LATERAL (
-    SELECT a.title, a.source_name, a.url
-    FROM articles a
-    WHERE a.event_id = e.id
+    SELECT a.title, a.url, s.name AS source_name
+    FROM event_members em
+    JOIN articles a ON a.id = em.article_id
+    JOIN sources  s ON s.id = a.source_id
+    WHERE em.event_id = d.target_id
     ORDER BY a.published_at DESC NULLS LAST
     LIMIT 1
-) a ON true
-WHERE d.stage = 'relevance'
+) art ON true
+WHERE d.stage_name = 'relevance'
   AND d.target_type = 'event'
   AND d.created_at >= now() - interval '8 days'
   AND (d.decision_json->>'relevant')::boolean = false
 ORDER BY random()
 LIMIT 30;
--- ^ Примечание: если у articles нет колонки event_id (связь many-to-many через
--- отдельную таблицу), замени JOIN на правильную форму.
--- Признак: ошибка "column a.event_id does not exist".
 
 
 -- ============================================================
 -- БЛОК 4. Sample отказов на VERIFY
--- События, прошедшие relevance, но НЕ дошедшие до digest.
 -- ============================================================
 
+\echo '=== БЛОК 4: 20 случайных verify-отказов ==='
 SELECT
     d.created_at::date                          AS day,
     d.target_id                                 AS event_id,
@@ -118,41 +104,41 @@ SELECT
     d.decision_json->>'sources_count'           AS sources_count,
     d.decision_json->>'hype_score'              AS hype_score,
     d.decision_json->>'speaker_type'            AS speaker_type,
-    d.decision_json->>'notes'                   AS verifier_notes,
-    LEFT(a.title, 120)                          AS article_title,
-    a.url
+    LEFT(d.decision_json->>'notes', 200)        AS verifier_notes,
+    LEFT(art.title, 120)                        AS article_title,
+    art.source_name
 FROM decisions d
 LEFT JOIN LATERAL (
-    SELECT a.title, a.url
-    FROM articles a
-    WHERE a.event_id = d.target_id
+    SELECT a.title, s.name AS source_name
+    FROM event_members em
+    JOIN articles a ON a.id = em.article_id
+    JOIN sources  s ON s.id = a.source_id
+    WHERE em.event_id = d.target_id
     ORDER BY a.published_at DESC NULLS LAST
     LIMIT 1
-) a ON true
-WHERE d.stage = 'verify'
+) art ON true
+WHERE d.stage_name = 'verify'
   AND d.created_at >= now() - interval '8 days'
-  AND COALESCE(d.decision_json->>'action', '') NOT IN ('passed', 'verified')
+  AND COALESCE(d.decision_json->>'action', '') NOT IN ('passed', 'verified', 'summarized')
 ORDER BY random()
 LIMIT 20;
 
 
 -- ============================================================
--- БЛОК 5. Распределение digest'ов по категориям интересов
--- Какие interest-категории за неделю реально дошли до доставки.
--- Категории, у которых 0 — потенциальный пробел в покрытии.
+-- БЛОК 5. Категории интересов в дошедших digest'ах
 -- ============================================================
 
+\echo '=== БЛОК 5: категории в digestах ==='
 WITH recent_digests AS (
     SELECT
         dg.id,
-        dg.created_at::date AS day,
-        dg.headline,
         jsonb_array_elements_text(
             COALESCE(
                 (SELECT d.decision_json->'categories'
                  FROM decisions d
-                 WHERE d.stage = 'relevance'
-                   AND d.target_id = dg.event_id
+                 WHERE d.stage_name = 'relevance'
+                   AND d.target_id  = dg.event_id
+                 ORDER BY d.created_at DESC
                  LIMIT 1),
                 '[]'::jsonb
             )
@@ -167,56 +153,70 @@ ORDER BY digests DESC;
 
 
 -- ============================================================
--- БЛОК 6. Баланс языков/источников в дошедших digest'ах
--- Перекос покажет, какие источники / языки систематически
--- проигрывают на фильтрации.
+-- БЛОК 6. Баланс источников
 -- ============================================================
 
--- 6a. Источники В digest'ах
+\echo '=== БЛОК 6a: источники В digestах ==='
 SELECT
-    a.source_name,
-    COUNT(DISTINCT dg.id) AS digests_with_this_source
+    s.name                       AS source_name,
+    COUNT(DISTINCT dg.id)        AS digests_with_this_source
 FROM digests dg
-JOIN articles a ON a.event_id = dg.event_id
+JOIN event_members em ON em.event_id = dg.event_id
+JOIN articles a      ON a.id = em.article_id
+JOIN sources  s      ON s.id = a.source_id
 WHERE dg.created_at >= now() - interval '8 days'
-GROUP BY a.source_name
+GROUP BY s.name
 ORDER BY digests_with_this_source DESC;
 
--- 6b. Источники, ИНГЕСТНУТЫЕ за неделю (всё, что пришло в БД)
+\echo '=== БЛОК 6b: источники ИНГЕСТНУТЫЕ ==='
 SELECT
-    source_name,
-    COUNT(*) AS articles_ingested
-FROM articles
-WHERE created_at >= now() - interval '8 days'
-GROUP BY source_name
+    s.name        AS source_name,
+    COUNT(*)      AS articles_ingested
+FROM articles a
+JOIN sources  s ON s.id = a.source_id
+WHERE a.fetched_at >= now() - interval '8 days'
+GROUP BY s.name
 ORDER BY articles_ingested DESC;
--- Сравнить 6a и 6b: источники, которые много ингестятся, но
--- редко дают digest, — кандидаты на проблему с фильтрацией.
 
 
 -- ============================================================
--- БЛОК 7. Контроль качества: высоко-confidence отказы
--- Relevance отверг с confidence >= 0.85, но рационал короткий
--- ("not relevant", "off-topic") — часто там модель ошиблась уверенно.
+-- БЛОК 7. Уверенные короткие отказы relevance
 -- ============================================================
 
+\echo '=== БЛОК 7: confident shallow rejections ==='
 SELECT
-    d.created_at::date                                  AS day,
-    LEFT(d.decision_json->>'why', 200)                  AS why,
-    LEFT(a.title, 120)                                  AS title,
-    a.source_name
+    d.created_at::date                          AS day,
+    LEFT(d.decision_json->>'why', 200)          AS why,
+    LEFT(art.title, 120)                        AS title,
+    art.source_name
 FROM decisions d
 LEFT JOIN LATERAL (
-    SELECT a.title, a.source_name
-    FROM articles a
-    WHERE a.event_id = d.target_id
+    SELECT a.title, s.name AS source_name
+    FROM event_members em
+    JOIN articles a ON a.id = em.article_id
+    JOIN sources  s ON s.id = a.source_id
+    WHERE em.event_id = d.target_id
     ORDER BY a.published_at DESC NULLS LAST
     LIMIT 1
-) a ON true
-WHERE d.stage = 'relevance'
+) art ON true
+WHERE d.stage_name = 'relevance'
   AND d.created_at >= now() - interval '8 days'
   AND (d.decision_json->>'relevant')::boolean = false
-  AND (d.decision_json->>'confidence')::float >= 0.85
+  AND COALESCE((d.decision_json->>'confidence')::float, 0) >= 0.85
   AND LENGTH(d.decision_json->>'why') < 150
 ORDER BY random()
 LIMIT 20;
+
+
+-- ============================================================
+-- БЛОК 8. Бонус: распределение языков статей за неделю
+-- ============================================================
+
+\echo '=== БЛОК 8: язык ингестнутых статей ==='
+SELECT
+    COALESCE(lang, '(null)') AS lang,
+    COUNT(*) AS articles
+FROM articles
+WHERE fetched_at >= now() - interval '8 days'
+GROUP BY lang
+ORDER BY articles DESC;
