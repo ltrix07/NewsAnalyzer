@@ -5,8 +5,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -15,13 +17,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import engine._retry as retry_module
 from delivery import client as delivery_client
-from delivery.discussion import render_discussion_prompt
+from delivery.discussion import DiscussionAnswer, render_discussion_prompt
 from delivery.dispatcher import deliver_pending
 from delivery.formatter import MAX_TELEGRAM_MESSAGE_LENGTH, format_digest
 from delivery.keyboards import (
     build_digest_keyboard,
     build_discussion_callback,
     build_feedback_callback,
+    build_research_callback,
+    build_research_keyboard,
     parse_callback_data,
 )
 from delivery.listener.handlers import handle_update, latest_feedback
@@ -32,9 +36,21 @@ from delivery.listener.service import (
     process_update,
     process_update_safely,
 )
+from delivery.research import research_digest_question
 from engine.domain import Digest as DigestDTO
-from engine.llm.schemas import Citation
-from engine.models import Digest, DigestFeedback, DiscussionPending, Event, Impression
+from engine.llm.client import LLMResponse, LLMUsage
+from engine.llm.schemas import Citation, DiscussionReply, ResearchReply
+from engine.models import (
+    Decision,
+    Digest,
+    DigestFeedback,
+    DiscussionPending,
+    Event,
+    Impression,
+    ResearchPending,
+)
+from engine.search import tavily as tavily_module
+from engine.search.tavily import SearchResult, TavilyClient
 from engine.stages._event_context import EventArticle
 
 
@@ -213,19 +229,25 @@ def test_keyboard_callback_data_round_trip_and_size() -> None:
     like = build_feedback_callback("like", digest_id)
     dislike = build_feedback_callback("dislike", digest_id)
     discussion = build_discussion_callback(digest_id)
+    research = build_research_callback(digest_id)
     like_payload = parse_callback_data(like)
     dislike_payload = parse_callback_data(dislike)
     discussion_payload = parse_callback_data(discussion)
+    research_payload = parse_callback_data(research)
 
     assert like_payload is not None
     assert dislike_payload is not None
     assert discussion_payload is not None
+    assert research_payload is not None
     assert like_payload.action == "like"
     assert like_payload.digest_id == digest_id
     assert dislike_payload.action == "dislike"
     assert discussion_payload.action == "discussion"
-    assert max(len(value.encode("utf-8")) for value in (like, dislike, discussion)) <= 64
+    assert research_payload.action == "research"
+    assert research_payload.digest_id == digest_id
+    assert max(len(value.encode("utf-8")) for value in (like, dislike, discussion, research)) <= 64
     assert build_digest_keyboard(digest_id)["inline_keyboard"]
+    assert build_research_keyboard(digest_id)["inline_keyboard"]
 
 
 def test_discussion_prompt_assembles_digest_excerpts_and_output_language() -> None:
@@ -252,6 +274,81 @@ def test_discussion_prompt_assembles_digest_excerpts_and_output_language() -> No
     assert "The council kept rates unchanged." in prompt
     assert "What does this mean for mortgages?" in prompt
     assert "ALWAYS answer in ru" in prompt
+    assert "needs_research=true" in prompt
+
+
+@pytest.mark.asyncio
+async def test_discussion_needs_research_writes_pending_and_keyboard_is_sent(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = await _create_event(db_session)
+    digest = await _create_digest_row(db_session, event_id=event.id, headline="Uncovered")
+
+    class FakeLLMClient:
+        async def call_structured(self, **_: Any) -> LLMResponse[DiscussionReply]:
+            return LLMResponse[DiscussionReply](
+                output=DiscussionReply(answer="Не хватает данных.", needs_research=True),
+                usage=LLMUsage(input_tokens=10, output_tokens=5, cost_usd=Decimal("0.000010")),
+                model="gpt-4o-mini",
+            )
+
+    from delivery.discussion import answer_digest_question
+
+    settings = delivery_client.get_settings()
+    answer = await answer_digest_question(
+        session=db_session,
+        settings=settings,
+        llm_client=FakeLLMClient(),  # type: ignore[arg-type]
+        chat_id=123456,
+        digest_id=digest.id,
+        question="What is missing?",
+    )
+
+    pending = await db_session.get(ResearchPending, 123456)
+    assert answer.offer_research is True
+    assert pending is not None
+    assert pending.digest_id == digest.id
+    assert pending.question == "What is missing?"
+
+    sent: list[tuple[int, str, dict[str, Any] | None]] = []
+
+    class FakeTelegramClient:
+        async def send_message(
+            self,
+            chat_id: int,
+            text: str,
+            *,
+            reply_markup: dict[str, Any] | None = None,
+            **_: Any,
+        ) -> dict[str, Any]:
+            sent.append((chat_id, text, reply_markup))
+            return {"ok": True}
+
+    async def fake_answer_digest_question(**_: Any) -> DiscussionAnswer:
+        return DiscussionAnswer(text="Grounded but incomplete", offer_research=True)
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+    monkeypatch.setattr("delivery.listener.service.session_scope", fake_session_scope)
+    monkeypatch.setattr(
+        "delivery.listener.service.answer_digest_question",
+        fake_answer_digest_question,
+    )
+    db_session.add(DiscussionPending(chat_id=123456, digest_id=digest.id))
+    await db_session.flush()
+
+    await process_update(
+        settings=settings,
+        telegram_client=FakeTelegramClient(),  # type: ignore[arg-type]
+        llm_client=object(),  # type: ignore[arg-type]
+        update={"update_id": 501, "message": {"chat": {"id": 123456}, "text": "Explain?"}},
+    )
+
+    assert sent == [(123456, "Grounded but incomplete", build_research_keyboard(digest.id))]
 
 
 @pytest.mark.asyncio
@@ -412,8 +509,10 @@ async def test_dispatcher_taste_reranks_and_major_floor_protects_big_events(
     report = await deliver_pending()
 
     assert report.sent == 3
-    order = [next(h for h in ["Major strike", "On taste", "Routine strike"] if h in text)
-             for text in recorded_headlines]
+    order = [
+        next(h for h in ["Major strike", "On taste", "Routine strike"] if h in text)
+        for text in recorded_headlines
+    ]
     # Major floor first; then on-taste above off-taste routine.
     assert order == ["Major strike", "On taste", "Routine strike"]
 
@@ -589,10 +688,7 @@ async def test_discussion_pending_second_click_replaces_target_and_expired_is_co
     pending = await db_session.get(DiscussionPending, 123456)
     assert pending is not None
     assert pending.digest_id == second.id
-    prompt_message = (
-        "Задайте вопрос по этому разбору "
-        "одним сообщением."
-    )
+    prompt_message = "Задайте вопрос по этому разбору одним сообщением."
     assert sent_messages == [
         prompt_message,
         prompt_message,
@@ -671,10 +767,10 @@ async def test_discussion_message_reprocessing_does_not_call_llm_twice(
             answers.append((chat_id, text))
             return {"ok": True}
 
-    async def fake_answer_digest_question(**_: Any) -> str:
+    async def fake_answer_digest_question(**_: Any) -> DiscussionAnswer:
         nonlocal llm_calls
         llm_calls += 1
-        return "Grounded answer"
+        return DiscussionAnswer(text="Grounded answer", offer_research=False)
 
     @asynccontextmanager
     async def fake_session_scope() -> AsyncIterator[AsyncSession]:
@@ -705,6 +801,182 @@ async def test_discussion_message_reprocessing_does_not_call_llm_twice(
     assert llm_calls == 1
     assert answers == [(123456, "Grounded answer")]
     assert await db_session.get(DiscussionPending, 123456) is None
+
+
+@pytest.mark.asyncio
+async def test_research_callback_consumes_pending_and_post_commit_runs_once(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = await _create_event(db_session)
+    digest = await _create_digest_row(db_session, event_id=event.id, headline="Research once")
+    db_session.add(ResearchPending(chat_id=123456, digest_id=digest.id, question="What changed?"))
+    await db_session.flush()
+    sent_messages: list[str] = []
+    callback_answers: list[str] = []
+    search_calls = 0
+    llm_calls = 0
+
+    class FakeTelegramClient:
+        async def answer_callback_query(self, _callback_id: str, text: str) -> dict[str, Any]:
+            callback_answers.append(text)
+            return {"ok": True}
+
+        async def send_message(self, _chat_id: int, text: str, **_: Any) -> dict[str, Any]:
+            sent_messages.append(text)
+            return {"ok": True}
+
+    class FakeSearchClient:
+        async def search(self, **_: Any) -> list[SearchResult]:
+            nonlocal search_calls
+            search_calls += 1
+            return [
+                SearchResult(
+                    title="Official update",
+                    url="https://example.com/update",
+                    content="Official detail.",
+                )
+            ]
+
+    class FakeLLMClient:
+        async def call_structured(self, **_: Any) -> LLMResponse[ResearchReply]:
+            nonlocal llm_calls
+            llm_calls += 1
+            return LLMResponse[ResearchReply](
+                output=ResearchReply(answer="Fresh answer [1]."),
+                usage=LLMUsage(input_tokens=20, output_tokens=8, cost_usd=Decimal("0.000100")),
+                model="gpt-4o",
+            )
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+    monkeypatch.setattr("delivery.listener.service.session_scope", fake_session_scope)
+    update = {
+        "update_id": 601,
+        "callback_query": {
+            "id": "cb-research",
+            "data": build_research_callback(digest.id),
+            "message": {"message_id": 10, "chat": {"id": 123456}},
+        },
+    }
+
+    await process_update(
+        settings=settings,
+        telegram_client=FakeTelegramClient(),  # type: ignore[arg-type]
+        llm_client=FakeLLMClient(),  # type: ignore[arg-type]
+        search_client=FakeSearchClient(),
+        update=update,
+    )
+    await process_update(
+        settings=settings,
+        telegram_client=FakeTelegramClient(),  # type: ignore[arg-type]
+        llm_client=FakeLLMClient(),  # type: ignore[arg-type]
+        search_client=FakeSearchClient(),
+        update=update,
+    )
+
+    assert search_calls == 1
+    assert llm_calls == 1
+    assert await db_session.get(ResearchPending, 123456) is None
+    assert callback_answers == ["Ищу в сети…", "Запрос устарел"]
+    assert any("Fresh answer [1]." in message for message in sent_messages)
+    assert any("https://example.com/update" in message for message in sent_messages)
+    assert any("Запрос устарел" in message for message in sent_messages)
+
+
+@pytest.mark.asyncio
+async def test_research_callback_expired_pending_sends_stale_message(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = await _create_event(db_session)
+    digest = await _create_digest_row(db_session, event_id=event.id, headline="Expired research")
+    db_session.add(
+        ResearchPending(
+            chat_id=123456,
+            digest_id=digest.id,
+            question="Still valid?",
+            created_at=datetime.now(UTC) - timedelta(minutes=16),
+        )
+    )
+    await db_session.flush()
+    sent_messages: list[str] = []
+
+    class FakeTelegramClient:
+        async def answer_callback_query(self, *_: Any, **__: Any) -> dict[str, Any]:
+            return {"ok": True}
+
+        async def send_message(self, _chat_id: int, text: str, **_: Any) -> dict[str, Any]:
+            sent_messages.append(text)
+            return {"ok": True}
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+
+    result = await handle_update(
+        session=db_session,
+        settings=settings,
+        telegram_client=FakeTelegramClient(),  # type: ignore[arg-type]
+        llm_client=object(),  # type: ignore[arg-type]
+        update={
+            "callback_query": {
+                "id": "cb-expired-research",
+                "data": build_research_callback(digest.id),
+                "message": {"message_id": 10, "chat": {"id": 123456}},
+            }
+        },
+    )
+
+    assert result.research is None
+    assert sent_messages == ["Запрос устарел, нажмите 💬 заново."]
+    assert await db_session.get(ResearchPending, 123456) is None
+
+
+@pytest.mark.asyncio
+async def test_research_daily_cap_skips_search(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = await _create_event(db_session)
+    digest = await _create_digest_row(db_session, event_id=event.id, headline="Cap")
+    db_session.add(
+        Decision(
+            run_id=uuid4(),
+            stage_name="research",
+            stage_version="v1",
+            target_type="research",
+            target_id=digest.id,
+            model="gpt-4o",
+            input_tokens=1,
+            output_tokens=1,
+            cost_usd=Decimal("0.000001"),
+            decision_json={"question": "already used"},
+        )
+    )
+    await db_session.flush()
+
+    class FailingSearchClient:
+        async def search(self, **_: Any) -> list[SearchResult]:
+            raise AssertionError("search should not run when cap is reached")
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "research_daily_cap", 1)
+
+    chunks = await research_digest_question(
+        session=db_session,
+        settings=settings,
+        llm_client=object(),  # type: ignore[arg-type]
+        search_client=FailingSearchClient(),
+        chat_id=123456,
+        digest_id=digest.id,
+        question="Need more?",
+    )
+
+    assert chunks == ["Лимит уточнений в сети на сегодня исчерпан. Попробуйте завтра."]
 
 
 @pytest.mark.asyncio
@@ -855,6 +1127,47 @@ async def test_telegram_bot_client_returns_payload_on_ok(monkeypatch: pytest.Mon
 
     assert payload["ok"] is True
     assert payload["result"]["message_id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_tavily_client_posts_search_body_and_normalizes_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == "https://api.tavily.com/search"
+        payload = httpx.QueryParams(request.url.query)
+        assert payload == httpx.QueryParams()
+        body = request.read().decode("utf-8")
+        assert '"api_key":"key"' in body
+        assert '"query":"query text"' in body
+        assert '"search_depth":"advanced"' in body
+        assert '"max_results":2' in body
+        assert '"include_answer":false' in body
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "title": "Title",
+                        "url": "https://example.com",
+                        "content": "Snippet",
+                    },
+                    {"title": "Incomplete"},
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        tavily_module,
+        "_build_async_client",
+        lambda *, timeout: httpx.AsyncClient(transport=transport, timeout=timeout),
+    )
+
+    client = TavilyClient(api_key="key", timeout=0.01)
+    results = await client.search(query="query text", search_depth="advanced", max_results=2)
+
+    assert results == [SearchResult(title="Title", url="https://example.com", content="Snippet")]
 
 
 @pytest.mark.asyncio

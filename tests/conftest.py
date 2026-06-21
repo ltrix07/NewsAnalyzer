@@ -27,6 +27,7 @@ from engine.models import (
     Event,
     EventMember,
     Impression,
+    ResearchPending,
     Source,
     TelegramCursor,
 )
@@ -55,6 +56,7 @@ async def db_session() -> AsyncIterator[AsyncSession]:
                 try:
                     for model in (
                         TelegramCursor,
+                        ResearchPending,
                         DiscussionPending,
                         DigestFeedback,
                         Impression,

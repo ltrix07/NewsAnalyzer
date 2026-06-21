@@ -15,17 +15,14 @@ from delivery.client import TelegramBotClient
 from delivery.keyboards import FeedbackAction, build_digest_keyboard, parse_callback_data
 from engine.config import Settings
 from engine.llm.client import LLMClient
-from engine.models import DigestFeedback, DiscussionPending
+from engine.models import DigestFeedback, DiscussionPending, ResearchPending
 
 logger = structlog.get_logger(__name__)
 
 DISCUSSION_PENDING_TTL = timedelta(minutes=15)
-_ASK_QUESTION_MESSAGE = (
-    "Задайте вопрос по этому разбору одним сообщением."
-)
-_EXPIRED_QUESTION_MESSAGE = (
-    "Срок вопроса истёк — нажмите 💬 ещё раз."
-)
+_ASK_QUESTION_MESSAGE = "Задайте вопрос по этому разбору одним сообщением."
+_EXPIRED_QUESTION_MESSAGE = "Срок вопроса истёк — нажмите 💬 ещё раз."
+_EXPIRED_RESEARCH_MESSAGE = "Запрос устарел, нажмите 💬 заново."
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,10 +35,20 @@ class DiscussionRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class ResearchRequest:
+    """A consumed pending research request ready to run after DB commit."""
+
+    chat_id: int
+    digest_id: int
+    question: str
+
+
+@dataclass(frozen=True, slots=True)
 class HandlerResult:
     """Work that is safe to run only after the handler transaction commits."""
 
     discussion: DiscussionRequest | None = None
+    research: ResearchRequest | None = None
     messages: list[tuple[int, str]] = field(default_factory=list)
 
 
@@ -63,13 +70,13 @@ async def handle_update(
 
     callback_query = update.get("callback_query")
     if isinstance(callback_query, dict):
-        await _handle_callback_query(
+        return await _handle_callback_query(
             session=session,
+            settings=settings,
             telegram_client=telegram_client,
             callback_query=callback_query,
             chat_id=expected_chat_id,
         )
-        return HandlerResult()
 
     message = update.get("message")
     if isinstance(message, dict):
@@ -118,18 +125,19 @@ async def latest_feedback(
 async def _handle_callback_query(
     *,
     session: AsyncSession,
+    settings: Settings,
     telegram_client: TelegramBotClient,
     callback_query: dict[str, Any],
     chat_id: int,
-) -> None:
+) -> HandlerResult:
     callback_query_id = callback_query.get("id")
     data = callback_query.get("data")
     if not isinstance(callback_query_id, str) or not isinstance(data, str):
-        return
+        return HandlerResult()
 
     payload = parse_callback_data(data)
     if payload is None:
-        return
+        return HandlerResult()
 
     if payload.action in {"like", "dislike"}:
         feedback: FeedbackAction = "like" if payload.action == "like" else "dislike"
@@ -161,7 +169,17 @@ async def _handle_callback_query(
                     selected_feedback=feedback,
                 ),
             )
-        return
+        return HandlerResult()
+
+    if payload.action == "research":
+        return await _handle_research_callback(
+            session=session,
+            settings=settings,
+            telegram_client=telegram_client,
+            callback_query_id=callback_query_id,
+            chat_id=chat_id,
+            digest_id=payload.digest_id,
+        )
 
     await _upsert_discussion_pending(session, chat_id=chat_id, digest_id=payload.digest_id)
     await _best_effort_answer_callback(
@@ -174,6 +192,7 @@ async def _handle_callback_query(
         chat_id,
         _ASK_QUESTION_MESSAGE,
     )
+    return HandlerResult()
 
 
 async def _handle_message(
@@ -228,6 +247,57 @@ async def _upsert_discussion_pending(
     )
     await session.execute(statement)
     await session.flush()
+
+
+async def _handle_research_callback(
+    *,
+    session: AsyncSession,
+    settings: Settings,
+    telegram_client: TelegramBotClient,
+    callback_query_id: str,
+    chat_id: int,
+    digest_id: int,
+) -> HandlerResult:
+    pending = await session.get(ResearchPending, chat_id)
+    now = datetime.now(UTC)
+    if pending is None or pending.digest_id != digest_id:
+        await _best_effort_answer_callback(
+            telegram_client,
+            callback_query_id,
+            "Запрос устарел",
+        )
+        await _best_effort_send_message(telegram_client, chat_id, _EXPIRED_RESEARCH_MESSAGE)
+        return HandlerResult()
+
+    created_at = pending.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+
+    question = pending.question
+    await session.delete(pending)
+    await session.flush()
+
+    if now - created_at > timedelta(minutes=settings.research_pending_ttl_minutes):
+        await _best_effort_answer_callback(
+            telegram_client,
+            callback_query_id,
+            "Запрос устарел",
+        )
+        await _best_effort_send_message(telegram_client, chat_id, _EXPIRED_RESEARCH_MESSAGE)
+        return HandlerResult()
+
+    await _best_effort_answer_callback(
+        telegram_client,
+        callback_query_id,
+        "Ищу в сети…",
+    )
+    return HandlerResult(
+        research=ResearchRequest(
+            chat_id=chat_id,
+            digest_id=digest_id,
+            question=question,
+        )
+    )
 
 
 async def _best_effort_answer_callback(

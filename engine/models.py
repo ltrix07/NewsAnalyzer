@@ -260,6 +260,21 @@ class DiscussionPending(Base):
     )
 
 
+class ResearchPending(Base):
+    """Current chat-to-digest research request awaiting button confirmation."""
+
+    __tablename__ = "research_pending"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    digest_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
+
+
 class TelegramCursor(Base):
     """Single-row cursor for Telegram long-poll update acknowledgement."""
 

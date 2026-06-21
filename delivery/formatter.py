@@ -75,6 +75,69 @@ def truncate_telegram_message(text: str) -> str:
     return _truncate_text(text, MAX_TELEGRAM_MESSAGE_LENGTH)
 
 
+def split_telegram_message(
+    text: str,
+    limit: int = MAX_TELEGRAM_MESSAGE_LENGTH,
+) -> list[str]:
+    """Split Telegram HTML text by paragraphs without cutting HTML entities."""
+
+    stripped = text.strip()
+    if not stripped:
+        return []
+    if limit < 1:
+        msg = "limit must be positive"
+        raise ValueError(msg)
+
+    chunks: list[str] = []
+    current = ""
+    for paragraph in stripped.split("\n\n"):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        candidate = paragraph if not current else f"{current}\n\n{paragraph}"
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+
+        if current:
+            chunks.append(current)
+            current = ""
+
+        if len(paragraph) <= limit:
+            current = paragraph
+            continue
+
+        chunks.extend(_split_long_paragraph(paragraph, limit))
+
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _split_long_paragraph(text: str, limit: int) -> list[str]:
+    chunks: list[str] = []
+    remaining = text.strip()
+    while remaining:
+        if len(remaining) <= limit:
+            chunks.append(remaining)
+            break
+        split_at = remaining.rfind(" ", 0, limit + 1)
+        if split_at <= 0:
+            split_at = limit
+        split_at = _avoid_entity_split(remaining, split_at)
+        chunks.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip()
+    return chunks
+
+
+def _avoid_entity_split(text: str, split_at: int) -> int:
+    ampersand = text.rfind("&", 0, split_at)
+    semicolon = text.rfind(";", 0, split_at)
+    if ampersand > semicolon:
+        return max(1, ampersand)
+    return split_at
+
+
 def _build_message(
     *,
     labels: dict[str, str],

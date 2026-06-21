@@ -13,11 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from delivery.client import TelegramBotClient
 from delivery.discussion import answer_digest_question
+from delivery.keyboards import build_research_keyboard
 from delivery.listener.handlers import HandlerResult, handle_update
+from delivery.research import SearchClient, research_digest_question
 from engine.config import Settings, get_settings
 from engine.db import session_scope
 from engine.llm.client import LLMClient, make_llm_client
 from engine.models import TelegramCursor
+from engine.search.tavily import make_tavily_client
 
 logger = structlog.get_logger(__name__)
 _INITIAL_FETCH_TIMEOUT_SECONDS = 0
@@ -57,6 +60,7 @@ async def process_update(
     settings: Settings,
     telegram_client: TelegramBotClient,
     llm_client: LLMClient,
+    search_client: SearchClient | None = None,
     update: dict[str, Any],
 ) -> None:
     """Process and acknowledge one update, then run post-commit work."""
@@ -80,6 +84,7 @@ async def process_update(
         settings=settings,
         telegram_client=telegram_client,
         llm_client=llm_client,
+        search_client=search_client,
         result=result,
     )
 
@@ -132,6 +137,13 @@ async def run_listener() -> None:
     settings = get_settings()
     telegram_client = TelegramBotClient(settings.require_telegram_token())
     llm_client = make_llm_client(settings)
+    # Tavily is optional: without a key the listener still runs feedback and
+    # discussion; only the "уточнить в сети" research follow-up is disabled.
+    search_client: SearchClient | None = None
+    if settings.tavily_api_key is not None:
+        search_client = make_tavily_client(settings)
+    else:
+        logger.warning("tavily_api_key_missing_research_disabled")
     stop_event = asyncio.Event()
     _install_signal_handlers(stop_event)
     try:
@@ -165,6 +177,7 @@ async def run_listener() -> None:
                 settings=settings,
                 telegram_client=telegram_client,
                 llm_client=llm_client,
+                search_client=search_client,
                 update=update,
             )
             if stop_event.is_set():
@@ -176,6 +189,7 @@ async def process_update_safely(
     settings: Settings,
     telegram_client: TelegramBotClient,
     llm_client: LLMClient,
+    search_client: SearchClient | None = None,
     update: dict[str, Any],
 ) -> None:
     """Process one update; skip poisoned updates so the daemon survives."""
@@ -185,6 +199,7 @@ async def process_update_safely(
             settings=settings,
             telegram_client=telegram_client,
             llm_client=llm_client,
+            search_client=search_client,
             update=update,
         )
     except Exception:
@@ -218,6 +233,7 @@ async def _run_post_commit_work(
     settings: Settings,
     telegram_client: TelegramBotClient,
     llm_client: LLMClient,
+    search_client: SearchClient | None,
     result: HandlerResult,
 ) -> None:
     for chat_id, text in result.messages:
@@ -226,21 +242,51 @@ async def _run_post_commit_work(
         except Exception:
             logger.exception("telegram_post_commit_message_failed", chat_id=chat_id)
 
-    if result.discussion is None:
-        return
+    if result.discussion is not None:
+        async with session_scope() as session:
+            answer = await answer_digest_question(
+                session=session,
+                settings=settings,
+                llm_client=llm_client,
+                chat_id=result.discussion.chat_id,
+                digest_id=result.discussion.digest_id,
+                question=result.discussion.question,
+            )
 
-    async with session_scope() as session:
-        answer = await answer_digest_question(
-            session=session,
-            settings=settings,
-            llm_client=llm_client,
-            digest_id=result.discussion.digest_id,
-            question=result.discussion.question,
+        # The pending row and cursor are already committed, so replay exits before
+        # another LLM call. A send failure here is intentionally at-most-once.
+        await telegram_client.send_message(
+            result.discussion.chat_id,
+            answer.text,
+            reply_markup=(
+                build_research_keyboard(result.discussion.digest_id)
+                if answer.offer_research
+                else None
+            ),
         )
 
-    # The pending row and cursor are already committed, so replay exits before
-    # another LLM call. A send failure here is intentionally at-most-once.
-    await telegram_client.send_message(result.discussion.chat_id, answer)
+    if result.research is not None:
+        if search_client is None:
+            logger.error("research_requested_without_search_client")
+            return
+        async with session_scope() as session:
+            chunks = await research_digest_question(
+                session=session,
+                settings=settings,
+                llm_client=llm_client,
+                search_client=search_client,
+                chat_id=result.research.chat_id,
+                digest_id=result.research.digest_id,
+                question=result.research.question,
+            )
+        for chunk in chunks:
+            try:
+                await telegram_client.send_message(result.research.chat_id, chunk)
+            except Exception:
+                logger.exception(
+                    "telegram_research_message_failed",
+                    chat_id=result.research.chat_id,
+                )
 
 
 def _install_signal_handlers(stop_event: asyncio.Event) -> None:

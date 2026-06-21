@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import html
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from delivery.formatter import truncate_telegram_message
@@ -15,15 +18,21 @@ from engine.domain import Digest as DigestDTO
 from engine.llm.client import LLMClient, LLMResponse
 from engine.llm.prompts import render_prompt
 from engine.llm.schemas import DiscussionReply
-from engine.models import Decision, Digest
+from engine.models import Decision, Digest, ResearchPending
 from engine.profile import load_profile
 from engine.stages._event_context import EventArticle, load_event_articles
 
 DISCUSSION_STAGE_NAME = "discussion"
-DISCUSSION_STAGE_VERSION = "v1"
-_DIGEST_NOT_FOUND_MESSAGE = (
-    "Не нашёл этот разбор. Возможно, он уже недоступен."
-)
+DISCUSSION_STAGE_VERSION = "v2"
+_DIGEST_NOT_FOUND_MESSAGE = "Не нашёл этот разбор. Возможно, он уже недоступен."
+
+
+@dataclass(frozen=True, slots=True)
+class DiscussionAnswer:
+    """Grounded answer plus optional web-research offer state."""
+
+    text: str
+    offer_research: bool
 
 
 async def answer_digest_question(
@@ -31,14 +40,15 @@ async def answer_digest_question(
     session: AsyncSession,
     settings: Settings,
     llm_client: LLMClient,
+    chat_id: int,
     digest_id: int,
     question: str,
-) -> str:
+) -> DiscussionAnswer:
     """Answer one user question from the digest and cited event excerpts only."""
 
     digest_model = await session.scalar(select(Digest).where(Digest.id == digest_id))
     if digest_model is None:
-        return _DIGEST_NOT_FOUND_MESSAGE
+        return DiscussionAnswer(text=_DIGEST_NOT_FOUND_MESSAGE, offer_research=False)
 
     digest = DigestDTO.model_validate(digest_model)
     articles = await load_event_articles(session, digest.event_id)
@@ -71,14 +81,25 @@ async def answer_digest_question(
                 "profile_name": digest.profile_name,
                 "output_language": profile.output_language,
                 "article_count": len(articles),
+                "needs_research": response.output.needs_research,
             },
         )
     )
+    if response.output.needs_research:
+        await _upsert_research_pending(
+            session,
+            chat_id=chat_id,
+            digest_id=digest_id,
+            question=question,
+        )
     await session.flush()
 
     # With max_tokens=700 the escaped answer should stay far below Telegram's
     # limit, so splitting an HTML entity during truncation is not expected.
-    return truncate_telegram_message(html.escape(response.output.answer, quote=False))
+    return DiscussionAnswer(
+        text=truncate_telegram_message(html.escape(response.output.answer, quote=False)),
+        offer_research=response.output.needs_research,
+    )
 
 
 async def call_discussion_llm(
@@ -117,9 +138,37 @@ def render_discussion_prompt(
     """Build the discussion prompt from the digest, excerpts, and user question."""
 
     return render_prompt(
-        "discussion_v1.j2",
+        "discussion_v2.j2",
         digest=digest,
         articles=articles,
         question=question,
         output_language=output_language,
     )
+
+
+async def _upsert_research_pending(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    digest_id: int,
+    question: str,
+) -> None:
+    created_at = datetime.now(UTC)
+    statement = (
+        insert(ResearchPending)
+        .values(
+            chat_id=chat_id,
+            digest_id=digest_id,
+            question=question,
+            created_at=created_at,
+        )
+        .on_conflict_do_update(
+            index_elements=[ResearchPending.chat_id],
+            set_={
+                "digest_id": digest_id,
+                "question": question,
+                "created_at": created_at,
+            },
+        )
+    )
+    await session.execute(statement)

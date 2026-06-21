@@ -6,11 +6,12 @@ from dataclasses import dataclass
 from typing import Literal
 
 FeedbackAction = Literal["like", "dislike"]
-KeyboardAction = Literal["like", "dislike", "discussion"]
+KeyboardAction = Literal["like", "dislike", "discussion", "research"]
 
 _LIKE_LABEL = "👍 Интересно"
 _DISLIKE_LABEL = "👎 Не интересно"
 _DISCUSSION_LABEL = "💬 Обсудить"
+_RESEARCH_LABEL = "🔎 Уточнить в сети"
 _MAX_CALLBACK_BYTES = 64
 
 
@@ -35,6 +36,12 @@ def build_discussion_callback(digest_id: int) -> str:
     return _validate_callback_data(f"dis:{digest_id}")
 
 
+def build_research_callback(digest_id: int) -> str:
+    """Build compact callback_data for the research button."""
+
+    return _validate_callback_data(f"res:{digest_id}")
+
+
 def parse_callback_data(callback_data: str) -> CallbackPayload | None:
     """Parse supported callback_data into a typed payload."""
 
@@ -53,6 +60,12 @@ def parse_callback_data(callback_data: str) -> CallbackPayload | None:
         if digest_id is None:
             return None
         return CallbackPayload(action="discussion", digest_id=digest_id)
+
+    if len(parts) == 2 and parts[0] == "res":
+        digest_id = _parse_positive_int(parts[1])
+        if digest_id is None:
+            return None
+        return CallbackPayload(action="research", digest_id=digest_id)
 
     return None
 
@@ -76,6 +89,16 @@ def build_digest_keyboard(
                 },
             ],
             [{"text": _DISCUSSION_LABEL, "callback_data": build_discussion_callback(digest_id)}],
+        ]
+    }
+
+
+def build_research_keyboard(digest_id: int) -> dict[str, list[list[dict[str, str]]]]:
+    """Build an inline keyboard for optional web research."""
+
+    return {
+        "inline_keyboard": [
+            [{"text": _RESEARCH_LABEL, "callback_data": build_research_callback(digest_id)}]
         ]
     }
 

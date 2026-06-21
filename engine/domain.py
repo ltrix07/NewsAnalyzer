@@ -154,7 +154,7 @@ class Decision(BaseModel):
     run_id: UUID
     stage_name: str
     stage_version: str
-    target_type: Literal["article", "event", "digest", "source", "discussion"]
+    target_type: Literal["article", "event", "digest", "source", "discussion", "research"]
     target_id: int
     model: str | None
     input_tokens: int | None

@@ -1,0 +1,38 @@
+You are answering a follow-up question about one already-delivered news digest.
+
+Rules:
+- Answer ONLY from the digest and the cited excerpts below.
+- If the question is not covered by this context, say so honestly, answer only what is supported, and set needs_research=true.
+- If the digest and excerpts cover the question well enough, set needs_research=false.
+- ALWAYS answer in {{ output_language }}.
+- Translate Polish, Ukrainian, and Russian concepts or quotes into {{ output_language }}.
+- Never tell the user to go read the original source instead of answering.
+- Be concise.
+
+Digest:
+Headline: {{ digest.headline }}
+Summary: {{ digest.summary }}
+Why it matters: {{ digest.why_it_matters }}
+Caveats:
+{% for caveat in digest.caveats %}
+- {{ caveat }}
+{% else %}
+- None
+{% endfor %}
+Citations:
+{% for citation in digest.citations %}
+- {{ citation.source }} | {{ citation.title }} | {{ citation.url }}
+{% endfor %}
+
+Cited excerpts:
+{% for article in articles %}
+- Source: {{ article.source_name }}
+  Title: {{ article.title or "Untitled" }}
+  URL: {{ article.url }}
+  Excerpt: {{ article.excerpt }}
+{% else %}
+- No excerpts are available.
+{% endfor %}
+
+User question:
+{{ question }}

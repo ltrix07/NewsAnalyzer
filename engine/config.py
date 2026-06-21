@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     openai_model_summarize: str = "gpt-4o"
     telegram_long_poll_seconds: int = 25
     discussion_model: str = "gpt-4o-mini"
+    tavily_api_key: str | None = None
+    tavily_max_results: int = 6
+    tavily_search_depth: Literal["basic", "advanced"] = "advanced"
+    research_model: str = "gpt-4o"
+    research_daily_cap: int = 20
+    research_pending_ttl_minutes: int = 15
     # Feedback-driven taste re-ranking at delivery (ROADMAP 1в, stage 2).
     taste_ranking_enabled: bool = True
     taste_weight: float = 1.0
@@ -66,6 +72,14 @@ class Settings(BaseSettings):
             msg = "TELEGRAM_CHAT_ID is not configured"
             raise RuntimeError(msg)
         return self.telegram_chat_id
+
+    def require_tavily_key(self) -> str:
+        """Return the Tavily API key or raise a clear runtime error."""
+
+        if self.tavily_api_key is None:
+            msg = "TAVILY_API_KEY is not configured"
+            raise RuntimeError(msg)
+        return self.tavily_api_key
 
 
 @lru_cache(maxsize=1)
