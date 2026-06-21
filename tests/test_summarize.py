@@ -42,6 +42,8 @@ class FakeLLMClient:
         assert model == "gpt-4o"
         assert "DigestPayload object" in system
         assert "UPSTREAM SIGNALS" in prompt
+        assert "Ты пишешь в ДВУХ режимах" in prompt
+        assert "why_it_matters — АНАЛИТИЧЕСКИЙ разбор" in prompt
         return LLMResponse[DigestPayload](
             output=output_schema.model_validate(self.payload.model_dump()),
             usage=LLMUsage(
@@ -222,6 +224,7 @@ async def test_summarize_stage_persists_digest_and_decision(db_session: AsyncSes
     assert digest_row is not None
     assert digest_row.profile_name == "volodymyr"
     assert digest_row.headline == _payload().headline
+    assert digest_row.stage_version == "v3"
     assert digest_row.confidence_level == "high"
     assert decision is not None
     assert decision.target_type == "digest"
