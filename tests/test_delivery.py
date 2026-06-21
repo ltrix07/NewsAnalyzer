@@ -71,10 +71,15 @@ def _make_digest(
     )
 
 
-async def _create_event(session: AsyncSession) -> Event:
+async def _create_event(
+    session: AsyncSession,
+    *,
+    centroid: list[float] | None = None,
+    article_count: int = 1,
+) -> Event:
     event = Event(
-        centroid=[0.0] * 1536,
-        article_count=1,
+        centroid=centroid or [0.0] * 1536,
+        article_count=article_count,
         first_seen_at=datetime.now(UTC),
         last_seen_at=datetime.now(UTC),
         status="open",
@@ -84,12 +89,20 @@ async def _create_event(session: AsyncSession) -> Event:
     return event
 
 
+def _axis_centroid(index: int, value: float = 1.0) -> list[float]:
+    vector = [0.0] * 1536
+    vector[index] = value
+    return vector
+
+
 async def _create_digest_row(
     session: AsyncSession,
     *,
     event_id: int,
     headline: str,
     delivered_at: datetime | None = None,
+    confidence_level: str = "medium",
+    created_at: datetime | None = None,
 ) -> Digest:
     digest = Digest(
         event_id=event_id,
@@ -97,7 +110,7 @@ async def _create_digest_row(
         headline=headline,
         summary=f"Summary for {headline}",
         why_it_matters=f"Why {headline}",
-        confidence_level="medium",
+        confidence_level=confidence_level,
         caveats=[f"Caveat for {headline}"],
         citations=[
             {
@@ -107,7 +120,7 @@ async def _create_digest_row(
             }
         ],
         stage_version="v1",
-        created_at=datetime.now(UTC),
+        created_at=created_at or datetime.now(UTC),
         delivered_at=delivered_at,
     )
     session.add(digest)
@@ -336,6 +349,79 @@ async def test_dispatcher_continues_after_mid_batch_failure(
     assert len(sent_messages) == 2
     impressions = (await db_session.scalars(select(Impression))).all()
     assert {impression.digest_id for impression in impressions} == {first.id, third.id}
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_taste_reranks_and_major_floor_protects_big_events(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Seed one like (topic axis 0) and one dislike (topic axis 1) to define taste.
+    liked_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    disliked_event = await _create_event(db_session, centroid=_axis_centroid(1))
+    liked_digest = await _create_digest_row(
+        db_session, event_id=liked_event.id, headline="Liked seed", delivered_at=datetime.now(UTC)
+    )
+    disliked_digest = await _create_digest_row(
+        db_session,
+        event_id=disliked_event.id,
+        headline="Disliked seed",
+        delivered_at=datetime.now(UTC),
+    )
+    db_session.add_all(
+        [
+            DigestFeedback(digest_id=liked_digest.id, chat_id=123456, feedback="like"),
+            DigestFeedback(digest_id=disliked_digest.id, chat_id=123456, feedback="dislike"),
+        ]
+    )
+    await db_session.flush()
+
+    # Three pending digests: on-taste (low sig), off-taste routine (low sig),
+    # and an off-taste but MAJOR event (high confidence) that the floor must lift.
+    taste_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    routine_event = await _create_event(db_session, centroid=_axis_centroid(1))
+    major_event = await _create_event(db_session, centroid=_axis_centroid(1))
+    await _create_digest_row(
+        db_session, event_id=taste_event.id, headline="On taste", confidence_level="low"
+    )
+    await _create_digest_row(
+        db_session, event_id=routine_event.id, headline="Routine strike", confidence_level="low"
+    )
+    await _create_digest_row(
+        db_session, event_id=major_event.id, headline="Major strike", confidence_level="high"
+    )
+
+    recorded_headlines: list[str] = []
+
+    class FakeTelegramClient:
+        async def send_message(self, _chat_id: int, text: str, **_: Any) -> dict[str, Any]:
+            recorded_headlines.append(text)
+            return {"ok": True}
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_bot_token", "test-token")
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+    monkeypatch.setattr(settings, "taste_min_labels_per_class", 1)
+    monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
+    monkeypatch.setattr("delivery.dispatcher._build_client", lambda: FakeTelegramClient())
+
+    report = await deliver_pending()
+
+    assert report.sent == 3
+    order = [next(h for h in ["Major strike", "On taste", "Routine strike"] if h in text)
+             for text in recorded_headlines]
+    # Major floor first; then on-taste above off-taste routine.
+    assert order == ["Major strike", "On taste", "Routine strike"]
+
+    # taste_score is logged into each impression for later calibration.
+    impressions = (await db_session.scalars(select(Impression))).all()
+    contexts = [imp.context for imp in impressions]
+    assert all(ctx is not None and "taste_cosine" in ctx for ctx in contexts)
+    assert any(ctx["major"] for ctx in contexts)
 
 
 @pytest.mark.asyncio

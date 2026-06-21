@@ -160,8 +160,9 @@ async def main() -> None:
         rated = totals["rated_digests"] or 0
         if imp:
             print(f"  rated/impressions = {rated}/{imp} = {100*rated/imp:.1f}%")
-        print(f"  like share of rated = "
-              f"{(100*totals['likes']/totals['feedback_rows']) if totals['feedback_rows'] else 0:.1f}%")
+        fb_rows = totals["feedback_rows"] or 0
+        like_share = (100 * totals["likes"] / fb_rows) if fb_rows else 0.0
+        print(f"  like share of rated = {like_share:.1f}%")
 
         print()
         print("=" * 70)

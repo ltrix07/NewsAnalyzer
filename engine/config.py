@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     openai_model_summarize: str = "gpt-4o"
     telegram_long_poll_seconds: int = 25
     discussion_model: str = "gpt-4o-mini"
+    # Feedback-driven taste re-ranking at delivery (ROADMAP 1в, stage 2).
+    taste_ranking_enabled: bool = True
+    taste_weight: float = 1.0
+    significance_weight: float = 0.5
+    taste_min_labels_per_class: int = 3
 
     def require_database_url(self) -> str:
         """Return the configured database URL or raise a clear runtime error."""

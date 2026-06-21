@@ -74,7 +74,8 @@ async def main() -> None:
             ).all()
         )
 
-        samples: list[tuple[int, int, np.ndarray, str]] = []  # digest_id, label, unit-centroid, headline
+        # (digest_id, label, unit-centroid, headline)
+        samples: list[tuple[int, int, np.ndarray, str]] = []
         for row in rows:
             cen = centroids.get(row["event_id"])
             if cen is None:
@@ -114,9 +115,10 @@ async def main() -> None:
         print("=" * 70)
         print("LEAVE-ONE-OUT SEPARATION  (higher score = more 'your taste')")
         print("=" * 70)
+        gap = float(np.mean(like_scores) - np.mean(dislike_scores))
         print(f"  mean taste-score  👍 likes   : {np.mean(like_scores):+.3f}")
         print(f"  mean taste-score  👎 dislikes: {np.mean(dislike_scores):+.3f}")
-        print(f"  gap (like - dislike)         : {np.mean(like_scores) - np.mean(dislike_scores):+.3f}")
+        print(f"  gap (like - dislike)         : {gap:+.3f}")
         print(f"  ROC-AUC                      : {auc:.3f}   (0.5=noise, 1.0=perfect)")
 
         # best-threshold LOO accuracy
