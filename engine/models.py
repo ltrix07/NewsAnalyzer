@@ -209,6 +209,10 @@ class DigestFeedback(Base):
     __tablename__ = "digest_feedback"
     __table_args__ = (
         CheckConstraint("feedback in ('like', 'dislike')", name="ck_digest_feedback_feedback"),
+        CheckConstraint(
+            "reason is null or reason in ('off_topic','weak_analysis')",
+            name="ck_digest_feedback_reason",
+        ),
         Index(
             "ix_digest_feedback_digest_chat_created",
             "digest_id",
@@ -221,6 +225,7 @@ class DigestFeedback(Base):
     digest_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("digests.id"), nullable=False)
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     feedback: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

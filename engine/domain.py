@@ -128,6 +128,7 @@ class DigestFeedback(BaseModel):
     digest_id: int
     chat_id: int
     feedback: Literal["like", "dislike"]
+    reason: Literal["off_topic", "weak_analysis"] | None = None
     created_at: datetime
 
 

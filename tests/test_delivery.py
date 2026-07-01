@@ -23,6 +23,8 @@ from delivery.formatter import MAX_TELEGRAM_MESSAGE_LENGTH, format_digest
 from delivery.keyboards import (
     build_digest_keyboard,
     build_discussion_callback,
+    build_dislike_reason_callback,
+    build_dislike_reason_keyboard,
     build_feedback_callback,
     build_research_callback,
     build_research_keyboard,
@@ -49,6 +51,7 @@ from engine.models import (
     Impression,
     ResearchPending,
 )
+from engine.ranking.taste import build_taste_vector
 from engine.search import tavily as tavily_module
 from engine.search.tavily import SearchResult, TavilyClient
 from engine.stages._event_context import EventArticle
@@ -228,25 +231,48 @@ def test_keyboard_callback_data_round_trip_and_size() -> None:
 
     like = build_feedback_callback("like", digest_id)
     dislike = build_feedback_callback("dislike", digest_id)
+    off_topic = build_dislike_reason_callback("off_topic", digest_id)
+    weak_analysis = build_dislike_reason_callback("weak_analysis", digest_id)
     discussion = build_discussion_callback(digest_id)
     research = build_research_callback(digest_id)
     like_payload = parse_callback_data(like)
     dislike_payload = parse_callback_data(dislike)
+    off_topic_payload = parse_callback_data(off_topic)
+    weak_analysis_payload = parse_callback_data(weak_analysis)
     discussion_payload = parse_callback_data(discussion)
     research_payload = parse_callback_data(research)
 
     assert like_payload is not None
     assert dislike_payload is not None
+    assert off_topic_payload is not None
+    assert weak_analysis_payload is not None
     assert discussion_payload is not None
     assert research_payload is not None
     assert like_payload.action == "like"
     assert like_payload.digest_id == digest_id
     assert dislike_payload.action == "dislike"
+    assert off_topic_payload.action == "dislike_reason"
+    assert off_topic_payload.digest_id == digest_id
+    assert off_topic_payload.reason == "off_topic"
+    assert weak_analysis_payload.action == "dislike_reason"
+    assert weak_analysis_payload.reason == "weak_analysis"
     assert discussion_payload.action == "discussion"
     assert research_payload.action == "research"
     assert research_payload.digest_id == digest_id
-    assert max(len(value.encode("utf-8")) for value in (like, dislike, discussion, research)) <= 64
+    assert (
+        max(
+            len(value.encode("utf-8"))
+            for value in (like, dislike, off_topic, weak_analysis, discussion, research)
+        )
+        <= 64
+    )
     assert build_digest_keyboard(digest_id)["inline_keyboard"]
+    assert build_dislike_reason_keyboard(digest_id)["inline_keyboard"] == [
+        [
+            {"text": "📌 Не моя тема", "callback_data": off_topic},
+            {"text": "🛠 Слабый разбор", "callback_data": weak_analysis},
+        ]
+    ]
     assert build_research_keyboard(digest_id)["inline_keyboard"]
 
 
@@ -524,6 +550,59 @@ async def test_dispatcher_taste_reranks_and_major_floor_protects_big_events(
 
 
 @pytest.mark.asyncio
+async def test_taste_vector_excludes_weak_analysis_dislikes(
+    db_session: AsyncSession,
+) -> None:
+    liked_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    weak_event = await _create_event(db_session, centroid=_axis_centroid(1))
+    off_topic_event = await _create_event(db_session, centroid=_axis_centroid(2))
+    legacy_event = await _create_event(db_session, centroid=_axis_centroid(3))
+    liked_digest = await _create_digest_row(
+        db_session, event_id=liked_event.id, headline="Liked", delivered_at=datetime.now(UTC)
+    )
+    weak_digest = await _create_digest_row(
+        db_session,
+        event_id=weak_event.id,
+        headline="Weak analysis",
+        delivered_at=datetime.now(UTC),
+    )
+    off_topic_digest = await _create_digest_row(
+        db_session,
+        event_id=off_topic_event.id,
+        headline="Off topic",
+        delivered_at=datetime.now(UTC),
+    )
+    legacy_digest = await _create_digest_row(
+        db_session, event_id=legacy_event.id, headline="Legacy", delivered_at=datetime.now(UTC)
+    )
+    db_session.add_all(
+        [
+            DigestFeedback(digest_id=liked_digest.id, chat_id=123456, feedback="like"),
+            DigestFeedback(
+                digest_id=weak_digest.id,
+                chat_id=123456,
+                feedback="dislike",
+                reason="weak_analysis",
+            ),
+            DigestFeedback(
+                digest_id=off_topic_digest.id,
+                chat_id=123456,
+                feedback="dislike",
+                reason="off_topic",
+            ),
+            DigestFeedback(digest_id=legacy_digest.id, chat_id=123456, feedback="dislike"),
+        ]
+    )
+    await db_session.flush()
+
+    taste = await build_taste_vector(db_session, min_labels_per_class=1)
+
+    assert taste is not None
+    assert taste.n_like == 1
+    assert taste.n_dislike == 2
+
+
+@pytest.mark.asyncio
 async def test_feedback_append_latest_wins_and_duplicate_reprocessing_is_idempotent(
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
@@ -577,7 +656,149 @@ async def test_feedback_append_latest_wins_and_duplicate_reprocessing_is_idempot
     current = await latest_feedback(db_session, digest_id=digest.id, chat_id=123456)
     assert current is not None
     assert current.feedback == "dislike"
+    assert current.reason is None
     assert await db_session.scalar(select(func.count()).select_from(DigestFeedback)) == 2
+
+
+@pytest.mark.asyncio
+async def test_dislike_callback_records_feedback_and_shows_reason_keyboard(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = await _create_event(db_session)
+    digest = await _create_digest_row(db_session, event_id=event.id, headline="Feedback reason")
+    answers: list[str] = []
+    markups: list[dict[str, Any]] = []
+
+    class FakeTelegramClient:
+        async def answer_callback_query(self, _callback_id: str, text: str) -> dict[str, Any]:
+            answers.append(text)
+            return {"ok": True}
+
+        async def edit_message_reply_markup(
+            self,
+            _chat_id: int,
+            _message_id: int,
+            reply_markup: dict[str, Any],
+        ) -> dict[str, Any]:
+            markups.append(reply_markup)
+            return {"ok": True}
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+
+    await handle_update(
+        session=db_session,
+        settings=settings,
+        telegram_client=FakeTelegramClient(),  # type: ignore[arg-type]
+        llm_client=object(),  # type: ignore[arg-type]
+        update={
+            "callback_query": {
+                "id": "cb-dislike",
+                "data": build_feedback_callback("dislike", digest.id),
+                "message": {"message_id": 10, "chat": {"id": 123456}},
+            }
+        },
+    )
+
+    current = await latest_feedback(db_session, digest_id=digest.id, chat_id=123456)
+    assert current is not None
+    assert current.feedback == "dislike"
+    assert current.reason is None
+    assert answers == ["Почему не интересно?"]
+    assert markups == [build_dislike_reason_keyboard(digest.id)]
+
+
+@pytest.mark.asyncio
+async def test_dislike_reason_callbacks_update_latest_dislike_and_restore_keyboard(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = await _create_event(db_session)
+    digest = await _create_digest_row(db_session, event_id=event.id, headline="Feedback reason")
+    answers: list[str] = []
+    markups: list[dict[str, Any]] = []
+
+    class FakeTelegramClient:
+        async def answer_callback_query(self, _callback_id: str, text: str) -> dict[str, Any]:
+            answers.append(text)
+            return {"ok": True}
+
+        async def edit_message_reply_markup(
+            self,
+            _chat_id: int,
+            _message_id: int,
+            reply_markup: dict[str, Any],
+        ) -> dict[str, Any]:
+            markups.append(reply_markup)
+            return {"ok": True}
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+    db_session.add(DigestFeedback(digest_id=digest.id, chat_id=123456, feedback="dislike"))
+    await db_session.flush()
+
+    for callback_data, expected_reason in (
+        (build_dislike_reason_callback("weak_analysis", digest.id), "weak_analysis"),
+        (build_dislike_reason_callback("off_topic", digest.id), "off_topic"),
+    ):
+        await handle_update(
+            session=db_session,
+            settings=settings,
+            telegram_client=FakeTelegramClient(),  # type: ignore[arg-type]
+            llm_client=object(),  # type: ignore[arg-type]
+            update={
+                "callback_query": {
+                    "id": f"cb-{expected_reason}",
+                    "data": callback_data,
+                    "message": {"message_id": 10, "chat": {"id": 123456}},
+                }
+            },
+        )
+        current = await latest_feedback(db_session, digest_id=digest.id, chat_id=123456)
+        assert current is not None
+        assert current.reason == expected_reason
+
+    assert answers == ["Записал ✓", "Записал ✓"]
+    assert markups == [
+        build_digest_keyboard(digest.id, selected_feedback="dislike"),
+        build_digest_keyboard(digest.id, selected_feedback="dislike"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dislike_reason_callback_without_prior_dislike_is_noop(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = await _create_event(db_session)
+    digest = await _create_digest_row(db_session, event_id=event.id, headline="No prior dislike")
+
+    class FakeTelegramClient:
+        async def answer_callback_query(self, *_: Any, **__: Any) -> dict[str, Any]:
+            return {"ok": True}
+
+        async def edit_message_reply_markup(self, *_: Any, **__: Any) -> dict[str, Any]:
+            return {"ok": True}
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+
+    await handle_update(
+        session=db_session,
+        settings=settings,
+        telegram_client=FakeTelegramClient(),  # type: ignore[arg-type]
+        llm_client=object(),  # type: ignore[arg-type]
+        update={
+            "callback_query": {
+                "id": "cb-reason-without-dislike",
+                "data": build_dislike_reason_callback("weak_analysis", digest.id),
+                "message": {"message_id": 10, "chat": {"id": 123456}},
+            }
+        },
+    )
+
+    assert await db_session.scalar(select(func.count()).select_from(DigestFeedback)) == 0
 
 
 @pytest.mark.asyncio

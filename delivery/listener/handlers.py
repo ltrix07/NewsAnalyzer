@@ -12,7 +12,12 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from delivery.client import TelegramBotClient
-from delivery.keyboards import FeedbackAction, build_digest_keyboard, parse_callback_data
+from delivery.keyboards import (
+    FeedbackAction,
+    build_digest_keyboard,
+    build_dislike_reason_keyboard,
+    parse_callback_data,
+)
 from engine.config import Settings
 from engine.llm.client import LLMClient
 from engine.models import DigestFeedback, DiscussionPending, ResearchPending
@@ -155,6 +160,36 @@ async def _handle_callback_query(
         await _best_effort_answer_callback(
             telegram_client,
             callback_query_id,
+            "Почему не интересно?" if feedback == "dislike" else "Записал ✓",
+        )
+        message = callback_query.get("message")
+        message_id = _message_id(message)
+        if message_id is not None:
+            reply_markup = (
+                build_dislike_reason_keyboard(payload.digest_id)
+                if feedback == "dislike"
+                else build_digest_keyboard(
+                    payload.digest_id,
+                    selected_feedback=feedback,
+                )
+            )
+            await _best_effort_edit_reply_markup(
+                telegram_client,
+                chat_id,
+                message_id,
+                reply_markup,
+            )
+        return HandlerResult()
+
+    if payload.action == "dislike_reason":
+        current = await latest_feedback(session, digest_id=payload.digest_id, chat_id=chat_id)
+        if current is not None and current.feedback == "dislike":
+            current.reason = payload.reason
+            await session.flush()
+
+        await _best_effort_answer_callback(
+            telegram_client,
+            callback_query_id,
             "Записал ✓",
         )
         message = callback_query.get("message")
@@ -166,7 +201,7 @@ async def _handle_callback_query(
                 message_id,
                 build_digest_keyboard(
                     payload.digest_id,
-                    selected_feedback=feedback,
+                    selected_feedback="dislike",
                 ),
             )
         return HandlerResult()

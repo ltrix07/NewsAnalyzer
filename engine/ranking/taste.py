@@ -64,6 +64,9 @@ async def build_taste_vector(
                 SELECT d.event_id, r.feedback
                 FROM ranked r JOIN digests d ON d.id = r.digest_id
                 WHERE r.rn = 1
+                  AND (r.feedback = 'like'
+                       OR (r.feedback = 'dislike'
+                           AND r.reason IS DISTINCT FROM 'weak_analysis'))
                 """
             )
         )
@@ -74,9 +77,7 @@ async def build_taste_vector(
     labels: list[tuple[int, str]] = [(event_id, feedback) for event_id, feedback in rows]
     event_ids = {event_id for event_id, _ in labels}
     centroid_rows = (
-        await session.execute(
-            select(Event.id, Event.centroid).where(Event.id.in_(event_ids))
-        )
+        await session.execute(select(Event.id, Event.centroid).where(Event.id.in_(event_ids)))
     ).all()
     centroids: dict[int, list[float]] = {row[0]: row[1] for row in centroid_rows}
 
