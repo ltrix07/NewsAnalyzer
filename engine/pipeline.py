@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from engine.cli.cluster import cluster_command
+from engine.cli.consolidate import consolidate_command
 from engine.cli.embed import embed_command
 from engine.cli.fetch import fetch_command
 from engine.cli.filter import filter_command
@@ -32,6 +33,7 @@ STAGE_ORDER = (
     "ingest",
     "embed",
     "cluster",
+    "consolidate",
     "filter",
     "score",
     "verify",
@@ -76,6 +78,7 @@ def _stage_calls(
         "ingest": partial(ingest_command, run_id=run_id),
         "embed": partial(embed_command, run_id=run_id),
         "cluster": partial(cluster_command, run_id=run_id),
+        "consolidate": partial(consolidate_command, run_id=run_id),
         "filter": partial(filter_command, profile=profile_name, run_id=run_id),
         "score": partial(score_command, limit=limit_score, profile=profile_name, run_id=run_id),
         "verify": partial(

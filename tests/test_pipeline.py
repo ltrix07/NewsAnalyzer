@@ -26,6 +26,7 @@ def _patch_stage_commands(
     monkeypatch.setattr(pipeline, "ingest_command", stage_impls["ingest"])
     monkeypatch.setattr(pipeline, "embed_command", stage_impls["embed"])
     monkeypatch.setattr(pipeline, "cluster_command", stage_impls["cluster"])
+    monkeypatch.setattr(pipeline, "consolidate_command", stage_impls["consolidate"])
     monkeypatch.setattr(pipeline, "filter_command", stage_impls["filter"])
     monkeypatch.setattr(pipeline, "score_command", stage_impls["score"])
     monkeypatch.setattr(pipeline, "verify_command", stage_impls["verify"])
@@ -96,6 +97,7 @@ async def test_run_once_skips_requested_stages_and_keeps_shared_run_id(
     assert [stage_name for stage_name, _ in recorded_calls] == [
         "fetch",
         "ingest",
+        "consolidate",
         "filter",
         "score",
         "verify",

@@ -18,19 +18,26 @@ class EventArticle(BaseModel):
     excerpt: str
 
 
-async def load_event_articles(session: AsyncSession, event_id: int) -> list[EventArticle]:
+async def load_event_articles(
+    session: AsyncSession,
+    event_id: int,
+    *,
+    limit: int | None = None,
+) -> list[EventArticle]:
     """Load member articles of an event with source names and short excerpts."""
 
-    rows = (
-        await session.execute(
-            select(Source.name, Article.title, Article.url, Article.raw_text)
-            .select_from(EventMember)
-            .join(Article, Article.id == EventMember.article_id)
-            .join(Source, Source.id == Article.source_id)
-            .where(EventMember.event_id == event_id)
-            .order_by(EventMember.id)
-        )
-    ).all()
+    stmt = (
+        select(Source.name, Article.title, Article.url, Article.raw_text)
+        .select_from(EventMember)
+        .join(Article, Article.id == EventMember.article_id)
+        .join(Source, Source.id == Article.source_id)
+        .where(EventMember.event_id == event_id)
+        .order_by(EventMember.id)
+    )
+    if limit is not None:
+        stmt = stmt.limit(limit)
+
+    rows = (await session.execute(stmt)).all()
 
     return [
         EventArticle(

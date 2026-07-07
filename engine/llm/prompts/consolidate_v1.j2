@@ -1,0 +1,25 @@
+Decide whether two article clusters describe the SAME underlying real-world news event.
+
+Use a strict standard:
+- SAME means the same incident, attack, announcement, decision, or development on the same day.
+- Different outlets, different casualty counts, or different damage details can still be SAME.
+- Similar topic, same war, same country, repeated attacks on different cities, or different days are NOT SAME.
+- If the evidence is too thin or ambiguous, choose same_event=false.
+
+EVENT A
+{% for article in event_a -%}
+---
+Source: {{ article.source_name }}
+Title: {{ article.title or "(no title)" }}
+Excerpt: {{ article.excerpt }}
+{% endfor %}
+
+EVENT B
+{% for article in event_b -%}
+---
+Source: {{ article.source_name }}
+Title: {{ article.title or "(no title)" }}
+Excerpt: {{ article.excerpt }}
+{% endfor %}
+
+Return one SameEventVerdict object. Keep reason short.

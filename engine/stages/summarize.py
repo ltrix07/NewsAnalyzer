@@ -51,7 +51,7 @@ class SummarizeStage(Stage[VerifiedEventDTO, DigestDTO]):
     async def process(self, item: VerifiedEventDTO, ctx: Context) -> StageResult[DigestDTO]:
         """Generate and persist one digest for a verified event."""
 
-        articles = await load_event_articles(ctx.session, item.event.id)
+        articles = await load_event_articles(ctx.session, item.event.id, limit=8)
         rendered_prompt = render_prompt(
             "summarize_v3.j2",
             profile=self.profile,

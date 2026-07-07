@@ -32,7 +32,12 @@ class Settings(BaseSettings):
     http_timeout_seconds: float = 30.0
     cluster_similarity_threshold: float = 0.82
     cluster_window_hours: int = 36
+    consolidate_enabled: bool = True
+    consolidate_window_hours: int = 36
+    consolidate_candidate_min_similarity: float = 0.60
+    consolidate_max_neighbors: int = 5
     openai_model_relevance: str = "gpt-4o-mini"
+    openai_model_consolidate: str = "gpt-4o-mini"
     openai_model_verify: str = "gpt-4o"
     openai_model_summarize: str = "gpt-4o"
     telegram_long_poll_seconds: int = 25

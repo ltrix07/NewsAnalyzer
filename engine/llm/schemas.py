@@ -55,6 +55,13 @@ class DigestPayload(BaseModel):
     citations: list[Citation]
 
 
+class SameEventVerdict(BaseModel):
+    """Structured verdict for consolidation pair adjudication."""
+
+    same_event: bool
+    reason: str | None = None
+
+
 class DiscussionReply(BaseModel):
     """Grounded single-turn answer for a digest discussion."""
 
