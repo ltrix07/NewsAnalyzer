@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from delivery.formatter import split_telegram_message
+from delivery.strings import t
 from engine.config import Settings
 from engine.domain import Digest as DigestDTO
 from engine.llm.client import LLMClient
@@ -24,11 +25,6 @@ from engine.search.tavily import SearchResult
 
 RESEARCH_STAGE_NAME = "research"
 RESEARCH_STAGE_VERSION = "v1"
-RESEARCH_DISCLAIMER = (
-    "🔎 Собрано из открытых источников, точность не гарантируется — перепроверяйте важное."
-)
-_DIGEST_NOT_FOUND_MESSAGE = "Разбор недоступен, поэтому уточнить в сети не получилось."
-_DAILY_CAP_MESSAGE = "Лимит уточнений в сети на сегодня исчерпан. Попробуйте завтра."
 
 
 class SearchClient(Protocol):
@@ -57,11 +53,11 @@ async def research_digest_question(
     """Answer one question with Tavily results and return Telegram chunks."""
 
     if await _daily_research_count(session) >= settings.research_daily_cap:
-        return [_DAILY_CAP_MESSAGE]
+        return [t("research_daily_cap", settings.ui_language)]
 
     digest_model = await session.scalar(select(Digest).where(Digest.id == digest_id))
     if digest_model is None:
-        return [_DIGEST_NOT_FOUND_MESSAGE]
+        return [t("research_digest_not_found", settings.ui_language)]
 
     digest = DigestDTO.model_validate(digest_model)
     profile = load_profile(digest.profile_name, settings.profile_root)
@@ -112,7 +108,9 @@ async def research_digest_question(
     )
     await session.flush()
 
-    return split_telegram_message(_format_research_answer(response.output.answer, results))
+    return split_telegram_message(
+        _format_research_answer(response.output.answer, results, lang=settings.ui_language)
+    )
 
 
 async def _daily_research_count(session: AsyncSession) -> int:
@@ -132,9 +130,9 @@ def _build_search_query(*, question: str, headline: str) -> str:
     return f"{question.strip()} {headline.strip()}".strip()
 
 
-def _format_research_answer(answer: str, results: Sequence[SearchResult]) -> str:
+def _format_research_answer(answer: str, results: Sequence[SearchResult], *, lang: str) -> str:
     sections = [
-        html.escape(RESEARCH_DISCLAIMER, quote=False),
+        html.escape(t("research_disclaimer", lang), quote=False),
         html.escape(answer, quote=False),
     ]
     if results:
@@ -145,5 +143,5 @@ def _format_research_answer(answer: str, results: Sequence[SearchResult]) -> str
             )
             for index, result in enumerate(results, start=1)
         ]
-        sections.append("<b>Источники:</b>\n" + "\n".join(sources))
+        sections.append(t("research_sources_header", lang) + "\n" + "\n".join(sources))
     return "\n\n".join(sections)

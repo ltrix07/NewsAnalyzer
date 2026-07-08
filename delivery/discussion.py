@@ -13,6 +13,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from delivery.formatter import truncate_telegram_message
+from delivery.strings import t
 from engine.config import Settings
 from engine.domain import Digest as DigestDTO
 from engine.llm.client import LLMClient, LLMResponse
@@ -24,7 +25,6 @@ from engine.stages._event_context import EventArticle, load_event_articles
 
 DISCUSSION_STAGE_NAME = "discussion"
 DISCUSSION_STAGE_VERSION = "v2"
-_DIGEST_NOT_FOUND_MESSAGE = "Не нашёл этот разбор. Возможно, он уже недоступен."
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +48,10 @@ async def answer_digest_question(
 
     digest_model = await session.scalar(select(Digest).where(Digest.id == digest_id))
     if digest_model is None:
-        return DiscussionAnswer(text=_DIGEST_NOT_FOUND_MESSAGE, offer_research=False)
+        return DiscussionAnswer(
+            text=t("discussion_digest_not_found", settings.ui_language),
+            offer_research=False,
+        )
 
     digest = DigestDTO.model_validate(digest_model)
     articles = await load_event_articles(session, digest.event_id)

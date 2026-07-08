@@ -39,6 +39,8 @@ from delivery.listener.service import (
     process_update_safely,
 )
 from delivery.research import research_digest_question
+from delivery.strings import t
+from engine.consolidation_match import PairJudgement
 from engine.domain import Digest as DigestDTO
 from engine.llm.client import LLMResponse, LLMUsage
 from engine.llm.schemas import Citation, DiscussionReply, ResearchReply
@@ -122,6 +124,7 @@ async def _create_digest_row(
     delivered_at: datetime | None = None,
     confidence_level: str = "medium",
     created_at: datetime | None = None,
+    telegram_message_id: int | None = None,
 ) -> Digest:
     digest = Digest(
         event_id=event_id,
@@ -141,6 +144,7 @@ async def _create_digest_row(
         stage_version="v1",
         created_at=created_at or datetime.now(UTC),
         delivered_at=delivered_at,
+        telegram_message_id=telegram_message_id,
     )
     session.add(digest)
     await session.flush()
@@ -274,6 +278,61 @@ def test_keyboard_callback_data_round_trip_and_size() -> None:
         ]
     ]
     assert build_research_keyboard(digest_id)["inline_keyboard"]
+
+
+def test_keyboard_labels_localize_without_changing_callback_data() -> None:
+    digest_id = 123
+
+    default_keyboard = build_digest_keyboard(digest_id)
+    russian_keyboard = build_digest_keyboard(digest_id, lang="ru")
+    english_keyboard = build_digest_keyboard(digest_id, lang="en")
+    selected_english_keyboard = build_digest_keyboard(
+        digest_id,
+        selected_feedback="like",
+        lang="en",
+    )
+
+    assert default_keyboard == russian_keyboard
+    assert [button["text"] for row in english_keyboard["inline_keyboard"] for button in row] == [
+        "👍 Interesting",
+        "👎 Not interesting",
+        "💬 Discuss",
+    ]
+    assert selected_english_keyboard["inline_keyboard"][0][0]["text"] == "✅ 👍 Interesting"
+    assert [
+        button["callback_data"] for row in english_keyboard["inline_keyboard"] for button in row
+    ] == [button["callback_data"] for row in russian_keyboard["inline_keyboard"] for button in row]
+
+
+def test_dislike_reason_and_research_keyboards_localize() -> None:
+    digest_id = 123
+
+    assert build_dislike_reason_keyboard(digest_id, lang="en")["inline_keyboard"] == [
+        [
+            {
+                "text": "📌 Not my topic",
+                "callback_data": build_dislike_reason_callback("off_topic", digest_id),
+            },
+            {
+                "text": "🛠 Weak analysis",
+                "callback_data": build_dislike_reason_callback("weak_analysis", digest_id),
+            },
+        ]
+    ]
+    assert build_dislike_reason_keyboard(digest_id)["inline_keyboard"][0][0]["text"] == (
+        "📌 Не моя тема"
+    )
+    assert build_research_keyboard(digest_id, lang="en")["inline_keyboard"] == [
+        [{"text": "🔎 Check the web", "callback_data": build_research_callback(digest_id)}]
+    ]
+    assert build_research_keyboard(digest_id)["inline_keyboard"][0][0]["text"] == (
+        "🔎 Уточнить в сети"
+    )
+
+
+def test_ui_string_lookup_falls_back_to_russian() -> None:
+    assert t("btn_like", "en") == "👍 Interesting"
+    assert t("btn_like", "xx") == "👍 Интересно"
 
 
 def test_discussion_prompt_assembles_digest_excerpts_and_output_language() -> None:
@@ -428,6 +487,349 @@ async def test_dispatcher_sends_only_undelivered_digests(
     assert second.delivered_at is not None
     assert delivered.delivered_at is not None
     assert await db_session.scalar(select(func.count()).select_from(Impression)) == 2
+
+
+class _RecordingTelegramClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._next_message_id = 1000
+
+    async def send_message(self, chat_id: int, text: str, **kwargs: Any) -> dict[str, Any]:
+        self._next_message_id += 1
+        self.calls.append({"chat_id": chat_id, "text": text, **kwargs})
+        return {"ok": True, "result": {"message_id": self._next_message_id}}
+
+
+def _thread_judgement(same_event: bool) -> PairJudgement:
+    return PairJudgement(
+        same_event=same_event,
+        reason="test verdict",
+        model="gpt-4o-mini",
+        input_tokens=10,
+        output_tokens=3,
+        cost_usd=Decimal("0.000004"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_threads_same_story_update(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_event = await _create_event(db_session, centroid=_axis_centroid(0), article_count=3)
+    update_event = await _create_event(db_session, centroid=_axis_centroid(0), article_count=2)
+    parent = await _create_digest_row(
+        db_session,
+        event_id=parent_event.id,
+        headline="Kyiv strike",
+        delivered_at=datetime.now(UTC),
+        telegram_message_id=321,
+    )
+    update = await _create_digest_row(db_session, event_id=update_event.id, headline="Kyiv toll")
+    client = _RecordingTelegramClient()
+
+    async def same_adjudicator(*_: Any) -> PairJudgement:
+        return _thread_judgement(True)
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+    monkeypatch.setattr(settings, "thread_updates_enabled", True)
+    monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
+
+    report = await deliver_pending(client=client, adjudicator=same_adjudicator)
+
+    assert report.sent == 1
+    assert client.calls[0]["reply_to_message_id"] == 321
+    assert client.calls[0]["disable_notification"] is True
+    assert "Обновление по теме" in client.calls[0]["text"]
+    assert "Kyiv strike" in client.calls[0]["text"]
+    assert client.calls[0]["reply_markup"] == build_digest_keyboard(update.id)
+    assert update.telegram_message_id == 1001
+    impression = await db_session.scalar(
+        select(Impression).where(Impression.digest_id == update.id)
+    )
+    assert impression is not None
+    assert impression.context is not None
+    assert impression.context["threaded_parent_digest_id"] == parent.id
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_sends_top_level_when_unrelated(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    update_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    await _create_digest_row(
+        db_session,
+        event_id=parent_event.id,
+        headline="Kyiv strike",
+        delivered_at=datetime.now(UTC),
+        telegram_message_id=321,
+    )
+    update = await _create_digest_row(db_session, event_id=update_event.id, headline="Kharkiv")
+    client = _RecordingTelegramClient()
+
+    async def different_adjudicator(*_: Any) -> PairJudgement:
+        return _thread_judgement(False)
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+    monkeypatch.setattr(settings, "thread_updates_enabled", True)
+    monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
+
+    await deliver_pending(client=client, adjudicator=different_adjudicator)
+
+    assert "reply_to_message_id" not in client.calls[0]
+    assert "disable_notification" not in client.calls[0]
+    assert update.telegram_message_id == 1001
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_sends_top_level_when_adjudicator_fails(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    update_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    await _create_digest_row(
+        db_session,
+        event_id=parent_event.id,
+        headline="Kyiv strike",
+        delivered_at=datetime.now(UTC),
+        telegram_message_id=321,
+    )
+    update = await _create_digest_row(db_session, event_id=update_event.id, headline="Kyiv toll")
+    client = _RecordingTelegramClient()
+
+    async def failing_adjudicator(*_: Any) -> PairJudgement:
+        raise RuntimeError("openai unavailable")
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+    monkeypatch.setattr(settings, "thread_updates_enabled", True)
+    monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
+
+    report = await deliver_pending(client=client, adjudicator=failing_adjudicator)
+
+    # Adjudicator failure must not block delivery — the post still goes out top-level.
+    assert report.sent == 1
+    assert report.failed == 0
+    assert "reply_to_message_id" not in client.calls[0]
+    assert update.telegram_message_id == 1001
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_chains_to_latest_thread_message(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    update1_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    update2_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    old_time = datetime.now(UTC) - timedelta(hours=2)
+    recent_time = datetime.now(UTC) - timedelta(minutes=5)
+    await _create_digest_row(
+        db_session,
+        event_id=root_event.id,
+        headline="Kyiv strike",
+        delivered_at=old_time,
+        telegram_message_id=321,
+    )
+    update1 = await _create_digest_row(
+        db_session,
+        event_id=update1_event.id,
+        headline="Kyiv toll update",
+        delivered_at=recent_time,
+        telegram_message_id=654,
+    )
+    await _create_digest_row(db_session, event_id=update2_event.id, headline="Kyiv toll update 2")
+    client = _RecordingTelegramClient()
+
+    async def same_adjudicator(*_: Any) -> PairJudgement:
+        return _thread_judgement(True)
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+    monkeypatch.setattr(settings, "thread_updates_enabled", True)
+    monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
+
+    await deliver_pending(client=client, adjudicator=same_adjudicator)
+
+    assert client.calls[0]["reply_to_message_id"] == 654
+    impression = await db_session.scalar(select(Impression))
+    assert impression is not None
+    assert impression.context is not None
+    assert impression.context["threaded_parent_digest_id"] == update1.id
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_ignores_pre_feature_parent_without_message_id(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    update_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    await _create_digest_row(
+        db_session,
+        event_id=parent_event.id,
+        headline="Old delivered",
+        delivered_at=datetime.now(UTC),
+        telegram_message_id=None,
+    )
+    await _create_digest_row(db_session, event_id=update_event.id, headline="Update")
+    client = _RecordingTelegramClient()
+    adjudicator_calls = 0
+
+    async def unused_adjudicator(*_: Any) -> PairJudgement:
+        nonlocal adjudicator_calls
+        adjudicator_calls += 1
+        return _thread_judgement(True)
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+    monkeypatch.setattr(settings, "thread_updates_enabled", True)
+    monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
+
+    await deliver_pending(client=client, adjudicator=unused_adjudicator)
+
+    assert "reply_to_message_id" not in client.calls[0]
+    assert adjudicator_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_retries_top_level_when_reply_target_missing(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    update_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    await _create_digest_row(
+        db_session,
+        event_id=parent_event.id,
+        headline="Kyiv strike",
+        delivered_at=datetime.now(UTC),
+        telegram_message_id=321,
+    )
+    update = await _create_digest_row(db_session, event_id=update_event.id, headline="Kyiv toll")
+    calls: list[dict[str, Any]] = []
+
+    class MissingReplyClient:
+        async def send_message(self, chat_id: int, text: str, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"chat_id": chat_id, "text": text, **kwargs})
+            if len(calls) == 1:
+                raise RuntimeError("Bad Request: message to be replied not found")
+            return {"ok": True, "result": {"message_id": 999}}
+
+    async def same_adjudicator(*_: Any) -> PairJudgement:
+        return _thread_judgement(True)
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+    monkeypatch.setattr(settings, "thread_updates_enabled", True)
+    monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
+
+    report = await deliver_pending(client=MissingReplyClient(), adjudicator=same_adjudicator)  # type: ignore[arg-type]
+
+    assert report.sent == 1
+    assert calls[0]["reply_to_message_id"] == 321
+    assert "reply_to_message_id" not in calls[1]
+    assert "disable_notification" not in calls[1]
+    assert update.delivered_at is not None
+    assert update.telegram_message_id == 999
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_threading_disabled_never_adjudicates(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    update_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    await _create_digest_row(
+        db_session,
+        event_id=parent_event.id,
+        headline="Kyiv strike",
+        delivered_at=datetime.now(UTC),
+        telegram_message_id=321,
+    )
+    await _create_digest_row(db_session, event_id=update_event.id, headline="Kyiv toll")
+    client = _RecordingTelegramClient()
+
+    async def forbidden_adjudicator(*_: Any) -> PairJudgement:
+        raise AssertionError("adjudicator should not be called")
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+    monkeypatch.setattr(settings, "thread_updates_enabled", False)
+    monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
+
+    await deliver_pending(client=client, adjudicator=forbidden_adjudicator)
+
+    assert "reply_to_message_id" not in client.calls[0]
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_thread_window_bound(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    update_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    await _create_digest_row(
+        db_session,
+        event_id=parent_event.id,
+        headline="Old Kyiv strike",
+        delivered_at=datetime.now(UTC) - timedelta(hours=73),
+        telegram_message_id=321,
+    )
+    await _create_digest_row(db_session, event_id=update_event.id, headline="Kyiv toll")
+    client = _RecordingTelegramClient()
+
+    async def forbidden_adjudicator(*_: Any) -> PairJudgement:
+        raise AssertionError("old parent should not be adjudicated")
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+    monkeypatch.setattr(settings, "thread_updates_enabled", True)
+    monkeypatch.setattr(settings, "thread_window_hours", 72)
+    monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
+
+    await deliver_pending(client=client, adjudicator=forbidden_adjudicator)
+
+    assert "reply_to_message_id" not in client.calls[0]
 
 
 @pytest.mark.asyncio
@@ -707,6 +1109,103 @@ async def test_dislike_callback_records_feedback_and_shows_reason_keyboard(
     assert current.reason is None
     assert answers == ["Почему не интересно?"]
     assert markups == [build_dislike_reason_keyboard(digest.id)]
+
+
+@pytest.mark.asyncio
+async def test_feedback_callbacks_use_english_ui_language(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = await _create_event(db_session)
+    liked = await _create_digest_row(db_session, event_id=event.id, headline="Liked")
+    disliked = await _create_digest_row(db_session, event_id=event.id, headline="Disliked")
+    answers: list[str] = []
+    markups: list[dict[str, Any]] = []
+
+    class FakeTelegramClient:
+        async def answer_callback_query(self, _callback_id: str, text: str) -> dict[str, Any]:
+            answers.append(text)
+            return {"ok": True}
+
+        async def edit_message_reply_markup(
+            self,
+            _chat_id: int,
+            _message_id: int,
+            reply_markup: dict[str, Any],
+        ) -> dict[str, Any]:
+            markups.append(reply_markup)
+            return {"ok": True}
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+    monkeypatch.setattr(settings, "ui_language", "en")
+
+    for callback_id, callback_data in (
+        ("cb-like", build_feedback_callback("like", liked.id)),
+        ("cb-dislike", build_feedback_callback("dislike", disliked.id)),
+    ):
+        await handle_update(
+            session=db_session,
+            settings=settings,
+            telegram_client=FakeTelegramClient(),  # type: ignore[arg-type]
+            llm_client=object(),  # type: ignore[arg-type]
+            update={
+                "callback_query": {
+                    "id": callback_id,
+                    "data": callback_data,
+                    "message": {"message_id": 10, "chat": {"id": 123456}},
+                }
+            },
+        )
+
+    assert answers == ["Saved ✓", "Why not interesting?"]
+    assert markups == [
+        build_digest_keyboard(liked.id, selected_feedback="like", lang="en"),
+        build_dislike_reason_keyboard(disliked.id, lang="en"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_feedback_callbacks_default_to_russian_ui_language(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = await _create_event(db_session)
+    liked = await _create_digest_row(db_session, event_id=event.id, headline="Liked")
+    disliked = await _create_digest_row(db_session, event_id=event.id, headline="Disliked")
+    answers: list[str] = []
+
+    class FakeTelegramClient:
+        async def answer_callback_query(self, _callback_id: str, text: str) -> dict[str, Any]:
+            answers.append(text)
+            return {"ok": True}
+
+        async def edit_message_reply_markup(self, *_: Any, **__: Any) -> dict[str, Any]:
+            return {"ok": True}
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+    monkeypatch.setattr(settings, "ui_language", "ru")
+
+    for callback_id, callback_data in (
+        ("cb-like", build_feedback_callback("like", liked.id)),
+        ("cb-dislike", build_feedback_callback("dislike", disliked.id)),
+    ):
+        await handle_update(
+            session=db_session,
+            settings=settings,
+            telegram_client=FakeTelegramClient(),  # type: ignore[arg-type]
+            llm_client=object(),  # type: ignore[arg-type]
+            update={
+                "callback_query": {
+                    "id": callback_id,
+                    "data": callback_data,
+                    "message": {"message_id": 10, "chat": {"id": 123456}},
+                }
+            },
+        )
+
+    assert answers == ["Записал ✓", "Почему не интересно?"]
 
 
 @pytest.mark.asyncio
@@ -1201,6 +1700,73 @@ async def test_research_daily_cap_skips_search(
 
 
 @pytest.mark.asyncio
+async def test_research_daily_cap_uses_english_ui_language(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = await _create_event(db_session)
+    digest = await _create_digest_row(db_session, event_id=event.id, headline="Cap")
+    db_session.add(
+        Decision(
+            run_id=uuid4(),
+            stage_name="research",
+            stage_version="v1",
+            target_type="research",
+            target_id=digest.id,
+            model="gpt-4o",
+            input_tokens=1,
+            output_tokens=1,
+            cost_usd=Decimal("0.000001"),
+            decision_json={"question": "already used"},
+        )
+    )
+    await db_session.flush()
+
+    class FailingSearchClient:
+        async def search(self, **_: Any) -> list[SearchResult]:
+            raise AssertionError("search should not run when cap is reached")
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "research_daily_cap", 1)
+    monkeypatch.setattr(settings, "ui_language", "en")
+
+    chunks = await research_digest_question(
+        session=db_session,
+        settings=settings,
+        llm_client=object(),  # type: ignore[arg-type]
+        search_client=FailingSearchClient(),
+        chat_id=123456,
+        digest_id=digest.id,
+        question="Need more?",
+    )
+
+    assert chunks == ["Daily web-lookup limit reached. Try again tomorrow."]
+
+
+@pytest.mark.asyncio
+async def test_discussion_digest_not_found_uses_english_ui_language(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from delivery.discussion import answer_digest_question
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "ui_language", "en")
+
+    answer = await answer_digest_question(
+        session=db_session,
+        settings=settings,
+        llm_client=object(),  # type: ignore[arg-type]
+        chat_id=123456,
+        digest_id=999999,
+        question="Can you explain?",
+    )
+
+    assert answer.text == "Couldn't find this brief. It may no longer be available."
+    assert answer.offer_research is False
+
+
+@pytest.mark.asyncio
 async def test_poison_update_is_marked_processed(
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
@@ -1333,6 +1899,9 @@ async def test_process_update_advances_cursor_after_handling_duplicate_is_idempo
 async def test_telegram_bot_client_returns_payload_on_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/sendMessage")
+        body = request.read().decode("utf-8")
+        assert '"reply_to_message_id":42' in body
+        assert '"disable_notification":true' in body
         return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
 
     transport = httpx.MockTransport(handler)
@@ -1344,7 +1913,12 @@ async def test_telegram_bot_client_returns_payload_on_ok(monkeypatch: pytest.Mon
     monkeypatch.setattr(delivery_client.get_settings(), "http_timeout_seconds", 0.01)
 
     client = delivery_client.TelegramBotClient("token")
-    payload = await client.send_message(1, "hello")
+    payload = await client.send_message(
+        1,
+        "hello",
+        reply_to_message_id=42,
+        disable_notification=True,
+    )
 
     assert payload["ok"] is True
     assert payload["result"]["message_id"] == 1

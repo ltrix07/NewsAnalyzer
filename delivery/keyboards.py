@@ -5,16 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from delivery.strings import t
+
 FeedbackAction = Literal["like", "dislike"]
 DislikeReason = Literal["off_topic", "weak_analysis"]
 KeyboardAction = Literal["like", "dislike", "dislike_reason", "discussion", "research"]
 
-_LIKE_LABEL = "👍 Интересно"
-_DISLIKE_LABEL = "👎 Не интересно"
-_OFF_TOPIC_LABEL = "📌 Не моя тема"
-_WEAK_ANALYSIS_LABEL = "🛠 Слабый разбор"
-_DISCUSSION_LABEL = "💬 Обсудить"
-_RESEARCH_LABEL = "🔎 Уточнить в сети"
 _MAX_CALLBACK_BYTES = 64
 
 
@@ -95,11 +91,16 @@ def build_digest_keyboard(
     digest_id: int,
     *,
     selected_feedback: FeedbackAction | None = None,
+    lang: str = "ru",
 ) -> dict[str, list[list[dict[str, str]]]]:
     """Build the three-button inline keyboard for one digest."""
 
-    like_label = _LIKE_LABEL if selected_feedback != "like" else f"✅ {_LIKE_LABEL}"
-    dislike_label = _DISLIKE_LABEL if selected_feedback != "dislike" else f"✅ {_DISLIKE_LABEL}"
+    base_like_label = t("btn_like", lang)
+    base_dislike_label = t("btn_dislike", lang)
+    like_label = base_like_label if selected_feedback != "like" else f"✅ {base_like_label}"
+    dislike_label = (
+        base_dislike_label if selected_feedback != "dislike" else f"✅ {base_dislike_label}"
+    )
     return {
         "inline_keyboard": [
             [
@@ -109,23 +110,32 @@ def build_digest_keyboard(
                     "callback_data": build_feedback_callback("dislike", digest_id),
                 },
             ],
-            [{"text": _DISCUSSION_LABEL, "callback_data": build_discussion_callback(digest_id)}],
+            [
+                {
+                    "text": t("btn_discussion", lang),
+                    "callback_data": build_discussion_callback(digest_id),
+                }
+            ],
         ]
     }
 
 
-def build_dislike_reason_keyboard(digest_id: int) -> dict[str, list[list[dict[str, str]]]]:
+def build_dislike_reason_keyboard(
+    digest_id: int,
+    *,
+    lang: str = "ru",
+) -> dict[str, list[list[dict[str, str]]]]:
     """Build the two-button drill-down keyboard for dislike reasons."""
 
     return {
         "inline_keyboard": [
             [
                 {
-                    "text": _OFF_TOPIC_LABEL,
+                    "text": t("btn_off_topic", lang),
                     "callback_data": build_dislike_reason_callback("off_topic", digest_id),
                 },
                 {
-                    "text": _WEAK_ANALYSIS_LABEL,
+                    "text": t("btn_weak_analysis", lang),
                     "callback_data": build_dislike_reason_callback("weak_analysis", digest_id),
                 },
             ]
@@ -133,12 +143,16 @@ def build_dislike_reason_keyboard(digest_id: int) -> dict[str, list[list[dict[st
     }
 
 
-def build_research_keyboard(digest_id: int) -> dict[str, list[list[dict[str, str]]]]:
+def build_research_keyboard(
+    digest_id: int,
+    *,
+    lang: str = "ru",
+) -> dict[str, list[list[dict[str, str]]]]:
     """Build an inline keyboard for optional web research."""
 
     return {
         "inline_keyboard": [
-            [{"text": _RESEARCH_LABEL, "callback_data": build_research_callback(digest_id)}]
+            [{"text": t("btn_research", lang), "callback_data": build_research_callback(digest_id)}]
         ]
     }
 

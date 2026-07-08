@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from time import perf_counter
@@ -14,14 +12,11 @@ import typer
 from sqlalchemy import delete, exists, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from engine.config import Settings, get_settings
+from engine.config import get_settings
+from engine.consolidation_match import Adjudicator, PairJudgement, default_adjudicator
 from engine.db import session_scope
-from engine.llm.client import LLMResponse, make_llm_client
-from engine.llm.prompts import render_prompt
-from engine.llm.schemas import SameEventVerdict
-from engine.models import Article, Decision, Digest, Event, EventMember, Source
+from engine.models import Decision, Digest, Event, EventMember
 from engine.observability import record_decision
-from engine.stages._event_context import EventArticle
 from engine.stages.base import DecisionDraft
 
 STAGE_NAME = "consolidate"
@@ -43,21 +38,6 @@ MAX_NEIGHBORS_OPTION = typer.Option(
     min=1,
     help="Override the maximum nearest neighbors judged per event.",
 )
-
-
-@dataclass(frozen=True, slots=True)
-class PairJudgement:
-    """Verdict and accounting for one candidate event pair."""
-
-    same_event: bool
-    reason: str | None
-    model: str | None
-    input_tokens: int
-    output_tokens: int
-    cost_usd: Decimal
-
-
-Adjudicator = Callable[[AsyncSession, Event, Event], Awaitable[PairJudgement]]
 
 
 class _UnionFind:
@@ -141,74 +121,6 @@ async def _candidate_pairs(
                 pairs.add((min(event.id, resolved_other_id), max(event.id, resolved_other_id)))
 
     return sorted(pairs)
-
-
-async def _load_compact_event_articles(
-    session: AsyncSession,
-    event_id: int,
-    *,
-    limit: int = 3,
-) -> list[EventArticle]:
-    """Load short member context for consolidation adjudication."""
-
-    rows = (
-        await session.execute(
-            select(Source.name, Article.title, Article.url, Article.raw_text)
-            .select_from(EventMember)
-            .join(Article, Article.id == EventMember.article_id)
-            .join(Source, Source.id == Article.source_id)
-            .where(EventMember.event_id == event_id)
-            .order_by(EventMember.similarity_to_centroid.desc(), EventMember.id)
-            .limit(limit)
-        )
-    ).all()
-    return [
-        EventArticle(
-            source_name=source_name,
-            title=title,
-            url=url,
-            excerpt=(raw_text or "")[:600],
-        )
-        for source_name, title, url, raw_text in rows
-    ]
-
-
-async def _llm_adjudicate_pair(
-    session: AsyncSession,
-    left: Event,
-    right: Event,
-    *,
-    settings: Settings,
-) -> PairJudgement:
-    """Ask the cheap structured-output model whether two events are the same story."""
-
-    client = make_llm_client(settings)
-    response: LLMResponse[SameEventVerdict] = await client.call_structured(
-        model=settings.openai_model_consolidate,
-        system="You respond with a single SameEventVerdict object.",
-        prompt=render_prompt(
-            "consolidate_v1.j2",
-            event_a=await _load_compact_event_articles(session, left.id),
-            event_b=await _load_compact_event_articles(session, right.id),
-        ),
-        output_schema=SameEventVerdict,
-        max_tokens=256,
-    )
-    return PairJudgement(
-        same_event=response.output.same_event,
-        reason=response.output.reason,
-        model=response.model,
-        input_tokens=response.usage.input_tokens,
-        output_tokens=response.usage.output_tokens,
-        cost_usd=response.usage.cost_usd,
-    )
-
-
-def _default_adjudicator(settings: Settings) -> Adjudicator:
-    async def adjudicate(session: AsyncSession, left: Event, right: Event) -> PairJudgement:
-        return await _llm_adjudicate_pair(session, left, right, settings=settings)
-
-    return adjudicate
 
 
 def _canonical_event(events: list[Event]) -> Event:
@@ -317,7 +229,7 @@ async def consolidate_command(
     resolved_max_neighbors = (
         settings.consolidate_max_neighbors if max_neighbors is None else max_neighbors
     )
-    resolved_adjudicator = adjudicator or _default_adjudicator(settings)
+    resolved_adjudicator = adjudicator or default_adjudicator(settings)
 
     merged_groups = 0
     absorbed_events = 0

@@ -18,6 +18,7 @@ from delivery.keyboards import (
     build_dislike_reason_keyboard,
     parse_callback_data,
 )
+from delivery.strings import t
 from engine.config import Settings
 from engine.llm.client import LLMClient
 from engine.models import DigestFeedback, DiscussionPending, ResearchPending
@@ -25,9 +26,6 @@ from engine.models import DigestFeedback, DiscussionPending, ResearchPending
 logger = structlog.get_logger(__name__)
 
 DISCUSSION_PENDING_TTL = timedelta(minutes=15)
-_ASK_QUESTION_MESSAGE = "Задайте вопрос по этому разбору одним сообщением."
-_EXPIRED_QUESTION_MESSAGE = "Срок вопроса истёк — нажмите 💬 ещё раз."
-_EXPIRED_RESEARCH_MESSAGE = "Запрос устарел, нажмите 💬 заново."
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +85,7 @@ async def handle_update(
     if isinstance(message, dict):
         return await _handle_message(
             session=session,
+            settings=settings,
             message=message,
             chat_id=expected_chat_id,
         )
@@ -160,17 +159,22 @@ async def _handle_callback_query(
         await _best_effort_answer_callback(
             telegram_client,
             callback_query_id,
-            "Почему не интересно?" if feedback == "dislike" else "Записал ✓",
+            (
+                t("ack_dislike_reason_prompt", settings.ui_language)
+                if feedback == "dislike"
+                else t("ack_like", settings.ui_language)
+            ),
         )
         message = callback_query.get("message")
         message_id = _message_id(message)
         if message_id is not None:
             reply_markup = (
-                build_dislike_reason_keyboard(payload.digest_id)
+                build_dislike_reason_keyboard(payload.digest_id, lang=settings.ui_language)
                 if feedback == "dislike"
                 else build_digest_keyboard(
                     payload.digest_id,
                     selected_feedback=feedback,
+                    lang=settings.ui_language,
                 )
             )
             await _best_effort_edit_reply_markup(
@@ -190,7 +194,7 @@ async def _handle_callback_query(
         await _best_effort_answer_callback(
             telegram_client,
             callback_query_id,
-            "Записал ✓",
+            t("ack_like", settings.ui_language),
         )
         message = callback_query.get("message")
         message_id = _message_id(message)
@@ -202,6 +206,7 @@ async def _handle_callback_query(
                 build_digest_keyboard(
                     payload.digest_id,
                     selected_feedback="dislike",
+                    lang=settings.ui_language,
                 ),
             )
         return HandlerResult()
@@ -220,12 +225,12 @@ async def _handle_callback_query(
     await _best_effort_answer_callback(
         telegram_client,
         callback_query_id,
-        "Ок, жду вопрос",
+        t("ack_discussion", settings.ui_language),
     )
     await _best_effort_send_message(
         telegram_client,
         chat_id,
-        _ASK_QUESTION_MESSAGE,
+        t("msg_ask_question", settings.ui_language),
     )
     return HandlerResult()
 
@@ -233,6 +238,7 @@ async def _handle_callback_query(
 async def _handle_message(
     *,
     session: AsyncSession,
+    settings: Settings,
     message: dict[str, Any],
     chat_id: int,
 ) -> HandlerResult:
@@ -254,7 +260,7 @@ async def _handle_message(
     await session.flush()
 
     if now - created_at > DISCUSSION_PENDING_TTL:
-        return HandlerResult(messages=[(chat_id, _EXPIRED_QUESTION_MESSAGE)])
+        return HandlerResult(messages=[(chat_id, t("msg_question_expired", settings.ui_language))])
 
     return HandlerResult(
         discussion=DiscussionRequest(
@@ -299,9 +305,13 @@ async def _handle_research_callback(
         await _best_effort_answer_callback(
             telegram_client,
             callback_query_id,
-            "Запрос устарел",
+            t("ack_research_stale", settings.ui_language),
         )
-        await _best_effort_send_message(telegram_client, chat_id, _EXPIRED_RESEARCH_MESSAGE)
+        await _best_effort_send_message(
+            telegram_client,
+            chat_id,
+            t("msg_research_expired", settings.ui_language),
+        )
         return HandlerResult()
 
     created_at = pending.created_at
@@ -316,15 +326,19 @@ async def _handle_research_callback(
         await _best_effort_answer_callback(
             telegram_client,
             callback_query_id,
-            "Запрос устарел",
+            t("ack_research_stale", settings.ui_language),
         )
-        await _best_effort_send_message(telegram_client, chat_id, _EXPIRED_RESEARCH_MESSAGE)
+        await _best_effort_send_message(
+            telegram_client,
+            chat_id,
+            t("msg_research_expired", settings.ui_language),
+        )
         return HandlerResult()
 
     await _best_effort_answer_callback(
         telegram_client,
         callback_query_id,
-        "Ищу в сети…",
+        t("ack_research_searching", settings.ui_language),
     )
     return HandlerResult(
         research=ResearchRequest(

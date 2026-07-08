@@ -259,7 +259,10 @@ async def _run_post_commit_work(
             result.discussion.chat_id,
             answer.text,
             reply_markup=(
-                build_research_keyboard(result.discussion.digest_id)
+                build_research_keyboard(
+                    result.discussion.digest_id,
+                    lang=settings.ui_language,
+                )
                 if answer.offer_research
                 else None
             ),

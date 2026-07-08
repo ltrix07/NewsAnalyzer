@@ -40,6 +40,8 @@ class TelegramBotClient:
         parse_mode: str = "HTML",
         disable_web_page_preview: bool = True,
         reply_markup: dict[str, Any] | None = None,
+        reply_to_message_id: int | None = None,
+        disable_notification: bool = False,
     ) -> dict[str, Any]:
         """Send one Telegram message and return the parsed JSON response body."""
 
@@ -51,6 +53,10 @@ class TelegramBotClient:
         }
         if reply_markup is not None:
             body["reply_markup"] = reply_markup
+        if reply_to_message_id is not None:
+            body["reply_to_message_id"] = reply_to_message_id
+        if disable_notification:
+            body["disable_notification"] = disable_notification
 
         return await self._post("sendMessage", body)
 

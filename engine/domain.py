@@ -117,6 +117,7 @@ class Digest(BaseModel):
     stage_version: str
     created_at: datetime
     delivered_at: datetime | None
+    telegram_message_id: int | None = None
 
 
 class DigestFeedback(BaseModel):

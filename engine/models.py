@@ -199,6 +199,7 @@ class Digest(Base):
         server_default=text("now()"),
     )
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     event: Mapped[Event] = relationship(back_populates="digests")
 

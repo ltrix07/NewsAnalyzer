@@ -1,4 +1,4 @@
-# Видео для LinkedIn — newsAnalyzer (~85 сек)
+# Видео для LinkedIn — newsAnalyzer (~100 сек)
 
 Черновик сценария для видео, которым я делюсь с сообществом: показываю проект,
 который построил и использую сам. Это НЕ поиск работы и НЕ питч — просто рассказ
@@ -42,7 +42,7 @@
 
 ---
 
-## Сценарий (~85 сек, ~210 слов)
+## Сценарий (~100 сек, ~240 слов)
 
 Voiceover: короткие фразы, B1–B2, легко произносить.
 
@@ -50,16 +50,22 @@ Voiceover: короткие фразы, B1–B2, легко произносит
 |---|---|---|
 | **0:00–0:05** Хук | "I get hundreds of news articles a day. Almost none of them matter to me." | Слайд 1: стена мультиязычных заголовков, текст хука поверх. |
 | **0:05–0:22** Что это | "So I built a system for myself. It reads news in Polish, Russian and English — and sends me only what I actually need, in one language." | Появляется Слайд 2 (архитектура), стрелки зажигаются слева направо. |
-| **0:22–0:40** Архитектура | "It works as a pipeline. First it groups articles about the same event together, using embeddings — even across different languages. Then a language model checks each event: is it relevant to my profile, is it credible, and how important is it." | Держим схему; по очереди подсвечиваем Cluster → Relevance → Verify. |
-| **0:40–1:00** Живое демо | "Let me run it live. One command. You can see each stage — fetch, cluster, score, verify, summarize — and the exact tokens and cost for the run. Just a few cents." | Консоль: `uv run python -m engine run …`, таблица стадий с tokens + cost. (.env закрыт!) |
-| **1:00–1:15** Результат + мультиязычность | "And here is the result in Telegram. A short factual summary, why it matters for me, a confidence level, and links to the original sources. The sources were Polish. The output is English." | Telegram: пост бота с 👍/👎/💬, ссылки на PL-источники. Подсветить «PL in → EN out». |
-| **1:15–1:28** Ограничения (козырь) | "It is not perfect, and I know where. My own feedback data shows the real bottleneck is selection, not ranking. And running the strong model per user is expensive — so the next step is sharing work across similar profiles." | Слайд 3 / overlay: «Known trade-offs → next steps». |
-| **1:28–1:35** Закрытие | "That's the system — I built it for myself, and I use it every day. If you're curious about any part of it, ask me in the comments." | Слайд 4: спокойный титр. Никаких «open to roles» и ссылок на репозиторий. Только сдержанное закрытие + приглашение к разговору. |
+| **0:22–0:42** Архитектура | "It works as a pipeline. First it groups articles about the same event together, using embeddings — even across different languages. Then it merges duplicate stories, so one event becomes one post, not ten. After that a language model checks each event: is it relevant to my profile, is it credible, and how important." | Держим схему; по очереди подсвечиваем Cluster → Consolidate → Relevance → Verify. |
+| **0:42–1:02** Живое демо | "Let me run it live. One command. You can see each stage — fetch, cluster, consolidate, score, verify, summarize — and the exact tokens and cost for the run. Just a few cents." | Консоль: `uv run python -m engine run …`, таблица из 9 стадий с tokens + cost. Строка `consolidate` видна в кадре. (.env закрыт!) |
+| **1:02–1:14** Результат + мультиязычность | "And here is the result in Telegram. A short factual summary, why it matters for me, a confidence level, and links to the original sources. The sources were Polish. The output is English." | Telegram: пост бота с 👍/👎/💬, ссылки на PL-источники. Подсветить «PL in → EN out». Кнопки английские (`UI_LANGUAGE=en`). |
+| **1:14–1:22** Тред-обновления | "And when a story keeps developing, the updates come as a quiet reply under the first post — so I get the new details without another alert." | Telegram: раскрыть тред — под исходным постом про удар подшит реплай «🔄 Update on…» с обновлёнными деталями. Показать: это один тред, а не пять постов. |
+| **1:22–1:35** Ограничения (козырь) | "It is not perfect, and I know where. My own feedback data shows the real bottleneck is selection, not ranking. And running the strong model per user is expensive — so the next step is sharing work across similar profiles." | Слайд 3 / overlay: «Known trade-offs → next steps». |
+| **1:35–1:42** Закрытие | "That's the system — I built it for myself, and I use it every day. If you're curious about any part of it, ask me in the comments." | Слайд 4: спокойный титр. Никаких «open to roles» и ссылок на репозиторий. Только сдержанное закрытие + приглашение к разговору. |
 
 Заметки по демо:
 - Живой прогон бьёт по реальному OpenAI и занимает время. Лучше записать заранее и
   смонтировать (или заранее прогнать пайплайн, а на камеру сделать `--skip fetch` и
   только доставку, чтобы пост пришёл быстро). «One command» в озвучке остаётся честным.
+- Тред-обновление для демо: нужен хотя бы один многодневный сюжет с апдейтом (напр. удар
+  + обновлённые потери назавтра), чтобы в телеге реально был реплай-тред. Прогони пайплайн
+  два дня подряд на демо-БД заранее — иначе показывать нечего.
+- Хронометраж вырос до ~100с. Хочешь в 90 — самый жирный кандидат на подрезку: озвучка
+  архитектуры 0:22–0:42 (сократи перечисление проверок relevant/credible/important).
 
 ---
 
@@ -77,17 +83,18 @@ Voiceover: короткие фразы, B1–B2, легко произносит
 Текст боксов (на слайде):
 
 ```
-[ 8 RSS sources ]   [ Embed ]        [ Cluster ]       [ Filter ]     [ Relevance ]   [ Verify ]     [ Summarize ]      [ Telegram ]
-  PL · RU · EN   →  3-large     →  same event,    → profile/    →  LLM: is it  →  credible? →  grounded facts →   👍 👎 💬
-  (multilingual)    embeddings     cross-lang         keyword       for me?        hype?        + analysis,
-                                   (cosine 0.82)      rules                                     your language
+[ 8 RSS sources ]  [ Embed ]     [ Cluster ]     [ Consolidate ]   [ Filter ]   [ Relevance ]  [ Verify ]   [ Summarize ]    [ Telegram ]
+  PL · RU · EN  →  3-large   →  same event,  →  merge dup     → profile/ →  LLM: is it →  credible? → grounded facts →  👍 👎 💬
+  (multilingual)   embeddings    cross-lang       stories (LLM)     keyword     for me?       hype?        + analysis,
+                                 (cosine 0.82)                      rules                                  your language
 ```
 
-- 3 цветовые группы: вход (мультиязычные источники) / LLM-стадии (Relevance, Verify,
-  Summarize — общий лейбл на слайде: "OpenAI · structured outputs") / выход (Telegram).
-- Пунктирная стрелка обратной связи из Telegram (👍/👎) назад к Relevance/Ranking,
-  подпись на слайде: "learns from your feedback".
-- Под Embed: "cross-language clustering". Под Summarize: "PL/RU/EN in → your language out".
+- 3 цветовые группы: вход (мультиязычные источники) / LLM-стадии (Consolidate, Relevance,
+  Verify, Summarize — общий лейбл на слайде: "OpenAI · structured outputs") / выход (Telegram).
+- Пунктирная стрелка обратной связи из Telegram (👍/👎) назад **к ранжированию на доставке**
+  (не к Relevance — фидбек пока меняет только порядок, не отсекает), подпись: "feedback re-ranks delivery".
+- Под Consolidate: "merge duplicate stories". Под Embed: "cross-language clustering".
+  Под Summarize: "PL/RU/EN in → your language out".
 
 **Слайд 3 — Trade-offs → Next (опциональный overlay).** Две колонки, заголовки на слайде:
 "What I simplified on purpose" / "Where it's going". Пункты (на слайде):
@@ -111,18 +118,20 @@ Voiceover: короткие фразы, B1–B2, легко произносит
    LLM-синтеза профиля — он галлюцинирует и молча ломает отбор).
 2. **COGS.** `verify` + `summarize` крутят gpt-4o на каждое событие — наивно ~$10–30/юзер/мес.
    → фильтрация на уровне сегмента (стоимость масштабируется числом сегментов, не юзеров),
-   тарифные лимиты, narrate-стадия для схлопывания дублей.
+   тарифные лимиты. (Консолидация уже режет часть стоимости: verify/summarize идут один раз
+   на схлопнутую историю, а не на каждый фрагмент.)
 3. **Кросс-язычная кластеризация не измерена.** 0.82 + 3-large выбраны под кросс-язычность,
    но долю слияния одного события на UA/RU/PL ещё не валидировал. Возможна фрагментация
    near-duplicate за день. → ручная проверка N событий, порог задан заранее.
 4. **Один профиль, нет онбординга.** Профиль — рукописный YAML (мой). Мульти-юзер и
    онбординг-интервью впереди. Не заявляй «self-adaptive per user» как готовое.
-5. **Доставка без cap.** `dispatcher` шлёт все pending-дайджесты хронологически;
-   ранжирование переупорядочивает, но не ограничивает объём. Дубли одной темы в утренней
-   пачке — известная проблема (narrate-стадия не построена).
-6. **Батч, не realtime.** Последовательный прогон по cron, 8 стадий; не стриминг. Демо вручную.
+5. **Дедуп событий — отгружен.** `consolidate`-стадия схлопывает фрагменты одного события
+   внутри прогона (LLM-адъюдикация gpt-4o-mini), а на доставке многодневные апдейты
+   подшиваются реплаем-тредом под исходный пост (тихо, без пуша). Остаток: тематическая
+   группировка через дни (разные события одной темы) и отсутствие жёсткого cap на объём пачки.
+6. **Батч, не realtime.** Последовательный прогон по cron, 9 стадий; не стриминг. Демо вручную.
 7. **Эмбеддинг усечён** до ~600 симв (заголовок + лид) ради стоимости/плотности кластеров —
    теряется сигнал из тела статьи. Осознанный trade-off.
-8. **Тесты (~101) в основном юнит**, mypy покрывает только `engine` + `delivery` (audit исключён).
+8. **Тесты (119) в основном юнит**, mypy покрывает только `engine` + `delivery` (audit исключён).
 9. **Обработка ошибок стадий:** прогон продолжается при падении стадии (собирает ошибку);
    `stop_on_error` опционален — сознательный выбор «частичный дайджест лучше, чем ноль».
