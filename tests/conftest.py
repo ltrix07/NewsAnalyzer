@@ -22,14 +22,17 @@ from engine.models import (
     Decision,
     Digest,
     DigestFeedback,
+    DigestLink,
     DiscussionPending,
     Embedding,
     Event,
     EventMember,
     Impression,
+    LinkClick,
     ResearchPending,
     Source,
     TelegramCursor,
+    UIEvent,
 )
 
 
@@ -56,9 +59,12 @@ async def db_session() -> AsyncIterator[AsyncSession]:
                 try:
                     for model in (
                         TelegramCursor,
+                        UIEvent,
                         ResearchPending,
                         DiscussionPending,
                         DigestFeedback,
+                        LinkClick,
+                        DigestLink,
                         Impression,
                         EventMember,
                         Digest,

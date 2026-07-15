@@ -162,7 +162,7 @@ def _build_message(
     return "\n\n".join(sections)
 
 
-def format_digest(digest: Digest) -> str:
+def format_digest(digest: Digest, link_urls: dict[int, str] | None = None) -> str:
     """Render one digest into Telegram-compatible HTML under the 4096-char limit."""
 
     labels = _load_labels(digest.profile_name)
@@ -173,10 +173,10 @@ def format_digest(digest: Digest) -> str:
     caveats = [f"⚠ {_escape_text(caveat)}" for caveat in digest.caveats]
     citations = [
         (
-            f'• <a href="{_escape_attr(citation.url)}">'
+            f'• <a href="{_escape_attr((link_urls or {}).get(index, citation.url))}">'
             f"{_escape_text(citation.source)}: {_escape_text(citation.title)}</a>"
         )
-        for citation in digest.citations
+        for index, citation in enumerate(digest.citations)
     ]
 
     message = _build_message(

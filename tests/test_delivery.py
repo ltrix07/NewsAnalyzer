@@ -30,6 +30,7 @@ from delivery.keyboards import (
     build_research_keyboard,
     parse_callback_data,
 )
+from delivery.listener import handlers as listener_handlers
 from delivery.listener.handlers import handle_update, latest_feedback
 from delivery.listener.service import (
     get_cursor,
@@ -52,11 +53,26 @@ from engine.models import (
     Event,
     Impression,
     ResearchPending,
+    UIEvent,
 )
 from engine.ranking.taste import build_taste_vector
 from engine.search import tavily as tavily_module
 from engine.search.tavily import SearchResult, TavilyClient
 from engine.stages._event_context import EventArticle
+
+
+@pytest.fixture(autouse=True)
+def _use_listener_test_session(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep best-effort analytics writes visible in the listener test transaction."""
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    monkeypatch.setattr(listener_handlers, "session_scope", fake_session_scope)
 
 
 def _make_digest(
@@ -1060,6 +1076,164 @@ async def test_feedback_append_latest_wins_and_duplicate_reprocessing_is_idempot
     assert current.feedback == "dislike"
     assert current.reason is None
     assert await db_session.scalar(select(func.count()).select_from(DigestFeedback)) == 2
+
+
+@pytest.mark.asyncio
+async def test_each_button_press_writes_one_uniform_ui_event(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = await _create_event(db_session)
+    digest = await _create_digest_row(db_session, event_id=event.id, headline="UI events")
+
+    class FakeTelegramClient:
+        async def answer_callback_query(self, *_: Any, **__: Any) -> dict[str, Any]:
+            return {"ok": True}
+
+        async def edit_message_reply_markup(self, *_: Any, **__: Any) -> dict[str, Any]:
+            return {"ok": True}
+
+        async def send_message(self, *_: Any, **__: Any) -> dict[str, Any]:
+            return {"ok": True}
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+    callbacks = (
+        ("like", build_feedback_callback("like", digest.id)),
+        ("dislike", build_feedback_callback("dislike", digest.id)),
+        (
+            "dislike_reason",
+            build_dislike_reason_callback("weak_analysis", digest.id),
+        ),
+        ("discussion", build_discussion_callback(digest.id)),
+        ("research", build_research_callback(digest.id)),
+    )
+
+    for action, callback_data in callbacks:
+        await handle_update(
+            session=db_session,
+            settings=settings,
+            telegram_client=FakeTelegramClient(),  # type: ignore[arg-type]
+            llm_client=object(),  # type: ignore[arg-type]
+            update={
+                "callback_query": {
+                    "id": f"cb-{action}",
+                    "data": callback_data,
+                    "message": {"message_id": 10, "chat": {"id": 123456}},
+                }
+            },
+        )
+
+    ui_events = list((await db_session.scalars(select(UIEvent).order_by(UIEvent.id))).all())
+    assert [(item.action, item.chat_id, item.digest_id) for item in ui_events] == [
+        (action, 123456, digest.id) for action, _ in callbacks
+    ]
+    assert ui_events[2].context == {"reason": "weak_analysis"}
+    assert await db_session.scalar(select(func.count()).select_from(DigestFeedback)) == 2
+
+
+@pytest.mark.asyncio
+async def test_unknown_callback_is_logged_without_crashing(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+
+    result = await handle_update(
+        session=db_session,
+        settings=settings,
+        telegram_client=object(),  # type: ignore[arg-type]
+        llm_client=object(),  # type: ignore[arg-type]
+        update={
+            "callback_query": {
+                "id": "cb-stale",
+                "data": "old:button:payload",
+                "message": {"chat": {"id": 123456}},
+            }
+        },
+    )
+
+    ui_event = await db_session.scalar(select(UIEvent))
+    assert result == listener_handlers.HandlerResult()
+    assert ui_event is not None
+    assert ui_event.action == "unknown_callback"
+    assert ui_event.digest_id is None
+    assert ui_event.context == {"data": "old:button:payload"}
+
+
+@pytest.mark.asyncio
+async def test_discussion_answer_logs_length_without_question_text(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = await _create_event(db_session)
+    digest = await _create_digest_row(db_session, event_id=event.id, headline="Question")
+    db_session.add(DiscussionPending(chat_id=123456, digest_id=digest.id))
+    await db_session.flush()
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+
+    result = await handle_update(
+        session=db_session,
+        settings=settings,
+        telegram_client=object(),  # type: ignore[arg-type]
+        llm_client=object(),  # type: ignore[arg-type]
+        update={"message": {"chat": {"id": 123456}, "text": "  Private question?  "}},
+    )
+
+    ui_event = await db_session.scalar(select(UIEvent))
+    assert result.discussion is not None
+    assert ui_event is not None
+    assert ui_event.action == "discussion_question"
+    assert ui_event.context == {"question_length": 17}
+    assert "Private question" not in str(ui_event.context)
+
+
+@pytest.mark.asyncio
+async def test_ui_event_failure_does_not_affect_feedback_or_callback(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = await _create_event(db_session)
+    digest = await _create_digest_row(db_session, event_id=event.id, headline="Best effort")
+    answered: list[str] = []
+
+    @asynccontextmanager
+    async def failing_session_scope() -> AsyncIterator[AsyncSession]:
+        raise RuntimeError("analytics unavailable")
+        yield db_session
+
+    class FakeTelegramClient:
+        async def answer_callback_query(self, callback_id: str, _text: str) -> dict[str, Any]:
+            answered.append(callback_id)
+            return {"ok": True}
+
+        async def edit_message_reply_markup(self, *_: Any, **__: Any) -> dict[str, Any]:
+            return {"ok": True}
+
+    monkeypatch.setattr(listener_handlers, "session_scope", failing_session_scope)
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+
+    result = await handle_update(
+        session=db_session,
+        settings=settings,
+        telegram_client=FakeTelegramClient(),  # type: ignore[arg-type]
+        llm_client=object(),  # type: ignore[arg-type]
+        update={
+            "callback_query": {
+                "id": "cb-like",
+                "data": build_feedback_callback("like", digest.id),
+                "message": {"message_id": 10, "chat": {"id": 123456}},
+            }
+        },
+    )
+
+    feedback = await latest_feedback(db_session, digest_id=digest.id, chat_id=123456)
+    assert result == listener_handlers.HandlerResult()
+    assert feedback is not None and feedback.feedback == "like"
+    assert answered == ["cb-like"]
 
 
 @pytest.mark.asyncio

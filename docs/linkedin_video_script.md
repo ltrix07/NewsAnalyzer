@@ -1,4 +1,4 @@
-# Видео для LinkedIn — newsAnalyzer (~100 сек)
+# Видео для LinkedIn — newsAnalyzer (~128 сек / ~2 мин)
 
 Черновик сценария для видео, которым я делюсь с сообществом: показываю проект,
 который построил и использую сам. Это НЕ поиск работы и НЕ питч — просто рассказ
@@ -42,7 +42,7 @@
 
 ---
 
-## Сценарий (~100 сек, ~240 слов)
+## Сценарий (~128 сек, ~310 слов)
 
 Voiceover: короткие фразы, B1–B2, легко произносить.
 
@@ -50,12 +50,13 @@ Voiceover: короткие фразы, B1–B2, легко произносит
 |---|---|---|
 | **0:00–0:05** Хук | "I get hundreds of news articles a day. Almost none of them matter to me." | Слайд 1: стена мультиязычных заголовков, текст хука поверх. |
 | **0:05–0:22** Что это | "So I built a system for myself. It reads news in Polish, Russian and English — and sends me only what I actually need, in one language." | Появляется Слайд 2 (архитектура), стрелки зажигаются слева направо. |
-| **0:22–0:42** Архитектура | "It works as a pipeline. First it groups articles about the same event together, using embeddings — even across different languages. Then it merges duplicate stories, so one event becomes one post, not ten. After that a language model checks each event: is it relevant to my profile, is it credible, and how important." | Держим схему; по очереди подсвечиваем Cluster → Consolidate → Relevance → Verify. |
-| **0:42–1:02** Живое демо | "Let me run it live. One command. You can see each stage — fetch, cluster, consolidate, score, verify, summarize — and the exact tokens and cost for the run. Just a few cents." | Консоль: `uv run python -m engine run …`, таблица из 9 стадий с tokens + cost. Строка `consolidate` видна в кадре. (.env закрыт!) |
-| **1:02–1:14** Результат + мультиязычность | "And here is the result in Telegram. A short factual summary, why it matters for me, a confidence level, and links to the original sources. The sources were Polish. The output is English." | Telegram: пост бота с 👍/👎/💬, ссылки на PL-источники. Подсветить «PL in → EN out». Кнопки английские (`UI_LANGUAGE=en`). |
-| **1:14–1:22** Тред-обновления | "And when a story keeps developing, the updates come as a quiet reply under the first post — so I get the new details without another alert." | Telegram: раскрыть тред — под исходным постом про удар подшит реплай «🔄 Update on…» с обновлёнными деталями. Показать: это один тред, а не пять постов. |
-| **1:22–1:35** Ограничения (козырь) | "It is not perfect, and I know where. My own feedback data shows the real bottleneck is selection, not ranking. And running the strong model per user is expensive — so the next step is sharing work across similar profiles." | Слайд 3 / overlay: «Known trade-offs → next steps». |
-| **1:35–1:42** Закрытие | "That's the system — I built it for myself, and I use it every day. If you're curious about any part of it, ask me in the comments." | Слайд 4: спокойный титр. Никаких «open to roles» и ссылок на репозиторий. Только сдержанное закрытие + приглашение к разговору. |
+| **0:22–0:38** Архитектура | "It works as a pipeline. It groups articles about the same event — even across languages — then merges duplicates, so one event becomes one post, not ten." | Держим схему; подсвечиваем Cluster → Consolidate. |
+| **0:38–0:58** Как решает | "Then it decides what matters to me. The reference point is a profile I wrote — where I live, my citizenship, what I follow. First a cheap keyword pass drops the obvious noise. Then a small model scores each event against that profile: is it about Ukraine, Polish rules for foreigners, the border, my work? And for war news — is it a real development, or just routine shelling? Only what survives gets the expensive check and the summary." | Слайд 2b «How it decides»: слева кусок `profile.yaml` (interests + keep/drop правила, **личные поля замазаны**), справа воронка cheap → expensive. |
+| **0:58–1:18** Живое демо | "Let me run it live. One command. You can see each stage — fetch, cluster, consolidate, score, verify, summarize — with the exact tokens and cost. A whole day costs a few cents, because the expensive model only ever sees what passed the filter." | Консоль: `uv run python -m engine run …`, таблица из 9 стадий с tokens + cost, `Total cost` в кадре. Строка `consolidate` видна. (.env закрыт! вывод `delivery send` в кадр НЕ давать — палит токен бота.) |
+| **1:18–1:30** Результат + мультиязычность | "And here is the result in Telegram. A short factual summary, why it matters for me, a confidence level, and links to the original sources. The sources were Polish. The output is English." | Telegram: пост бота с 👍/👎/💬, ссылки на PL-источники. Подсветить «PL in → EN out». Кнопки английские (`UI_LANGUAGE=en`). |
+| **1:30–1:38** Тред-обновления | "And when a story keeps developing, the updates come as a quiet reply under the first post — so I get the new details without another alert." | Telegram: раскрыть тред — под исходным постом про удар подшит реплай «🔄 Update on…» с обновлёнными деталями. Показать: это один тред, а не пять постов. |
+| **1:38–1:51** Ограничения (козырь) | "It is not perfect, and I know where. My own feedback data shows the real bottleneck is selection — deciding what's worth showing — not the ranking. That's the part I'm still improving." | Слайд 3 / overlay: «Known trade-offs → next steps». |
+| **1:51–2:08** Закрытие | "So that's the problem it solves: hundreds of articles a day, in three languages — and it hands me back only the few that actually affect my life. I built it for myself, and I use it every day. Thanks for watching — if you're curious about any part of it, ask me in the comments." | Слайд 4: тихий титр. Callback к хуку (проблема → решение) + благодарность. Никаких «open to roles» и ссылок на репозиторий. |
 
 Заметки по демо:
 - Живой прогон бьёт по реальному OpenAI и занимает время. Лучше записать заранее и
@@ -96,15 +97,42 @@ Voiceover: короткие фразы, B1–B2, легко произносит
 - Под Consolidate: "merge duplicate stories". Под Embed: "cross-language clustering".
   Под Summarize: "PL/RU/EN in → your language out".
 
+**Слайд 2b — Как решает (How it decides).** Снимает ощущение абстрактности: показывает
+«точку отсчёта» (профиль) и воронку отбора «дёшево → дорого». Слева на слайде — кусок
+`profile.yaml` (текст как в файле): `interests`, `keyword_rules: keep_if / drop_if`.
+**Личные поля `name` / `location` / `citizenship` — замазать или обрезать** (не секрет, но
+незачем). Справа — воронка (текст на слайде):
+
+```
+my profile  (written by hand)
+     │
+ keyword rules            ← cheap, drops the obvious noise
+     │
+ LLM relevance vs profile ← gpt-4o-mini, keep / drop
+   • Ukraine  • Poland-for-foreigners  • UA–PL  • my work  • EU status
+   • war news: real development?  or routine shelling?
+     │
+ verify + summarize       ← expensive model, only on survivors
+```
+
+Подпись на слайде: "cheap filter first — the expensive model only sees what survives".
+Честный сильный факт для комментов/собеса (не в кадр): промты `relevance_v1 → v2 → v3`
+лежат в репо — рубрикатор отбора переписан **трижды** по реальным промахам, а не угадан.
+
 **Слайд 3 — Trade-offs → Next (опциональный overlay).** Две колонки, заголовки на слайде:
-"What I simplified on purpose" / "Where it's going". Пункты (на слайде):
-- Selection > ranking is the real bottleneck → example-based relevance gate
-- gpt-4o per user is costly → share work across similar profiles
+"What works well" / "Where it's going". Пункты (на слайде):
+- Cheap by design: cents a day — the expensive model only runs on what passes the filter
+- The real bottleneck is selection, not ranking → example-based relevance gate (next)
 
 **Слайд 4 — Закрытие.** Спокойный титр в духе «делюсь работой», без призыва и без
-репозитория. Голос закрывает на работе, слайд — тихая точка. Текст на слайде:
-имя, "A system I built and use myself" (или короткое имя проекта),
-"Questions welcome in the comments". Ничего про работу/наём и никаких ссылок на код.
+репозитория. Голос закольцовывает на проблему (callback к хуку) и благодарит. Текст на
+слайде (по-английски):
+> Hundreds of articles a day → only the few that matter.
+>
+> A system I built and use myself.
+> Thanks for watching — questions welcome in the comments.
+
+Внизу мелко — имя / короткое название проекта. Ничего про работу/наём и никаких ссылок на код.
 
 ---
 
@@ -116,10 +144,15 @@ Voiceover: короткие фразы, B1–B2, легко произносит
    до 0.669, но dislike-rate стоит на ~58% — переранжирование меняет порядок, не отсекает.
    → example-based relevance-gate на чистых лейблах (few-shot реальными примерами, без
    LLM-синтеза профиля — он галлюцинирует и молча ломает отбор).
-2. **COGS.** `verify` + `summarize` крутят gpt-4o на каждое событие — наивно ~$10–30/юзер/мес.
-   → фильтрация на уровне сегмента (стоимость масштабируется числом сегментов, не юзеров),
-   тарифные лимиты. (Консолидация уже режет часть стоимости: verify/summarize идут один раз
-   на схлопнутую историю, а не на каждый фрагмент.)
+2. **COGS — измерено, дёшево.** По `decisions` за 21 день: **~$0.11/день ≈ $2–3/мес** на мой
+   профиль (моя старая оценка «$10–30» ошибочна — она предполагала gpt-4o на каждом событии).
+   ~80% стоимости — `relevance` (gpt-4o-mini на всех ~95 событиях, $0.044/прогон) + `summarize`
+   (gpt-4o, но только на прошедших отбор — единицы, $0.043/прогон); `verify` $0.013. Дорогой
+   gpt-4o почти не работает, потому что дешёвый relevance-фильтр отсекает почти всё до него.
+   Масштаб зависит **не от числа юзеров, а от того, сколько событий проходит отбор** (широкие
+   интересы → больше summarize → дороже; $2–3 — для строгого профиля). `embed`/`cluster`/
+   `consolidate` общие между юзерами и амортизируются. Рычаги для роста: сегмент-шеринг, cap на
+   summarize/день.
 3. **Кросс-язычная кластеризация не измерена.** 0.82 + 3-large выбраны под кросс-язычность,
    но долю слияния одного события на UA/RU/PL ещё не валидировал. Возможна фрагментация
    near-duplicate за день. → ручная проверка N событий, порог задан заранее.

@@ -21,6 +21,8 @@ dependencies = [
     "typer>=0.15.1,<1",
     "xxhash>=3.5.0,<4",
     "pyyaml>=6.0.2,<7",
+    "fastapi>=0.115.0,<1",
+    "uvicorn>=0.34.0,<1",
 ]
 
 [project.scripts]
@@ -52,7 +54,7 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.mypy]
-files = ["engine", "delivery"]
+files = ["engine", "delivery", "web"]
 python_version = "3.11"
 strict = true
 namespace_packages = true

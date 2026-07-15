@@ -10,6 +10,15 @@ from delivery.strings import t
 FeedbackAction = Literal["like", "dislike"]
 DislikeReason = Literal["off_topic", "weak_analysis"]
 KeyboardAction = Literal["like", "dislike", "dislike_reason", "discussion", "research"]
+UIEventAction = Literal[
+    "like",
+    "dislike",
+    "dislike_reason",
+    "discussion",
+    "research",
+    "discussion_question",
+    "unknown_callback",
+]
 
 _MAX_CALLBACK_BYTES = 64
 

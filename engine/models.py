@@ -204,6 +204,43 @@ class Digest(Base):
     event: Mapped[Event] = relationship(back_populates="digests")
 
 
+class DigestLink(Base):
+    """Opaque redirect token minted for one digest citation and recipient."""
+
+    __tablename__ = "digest_links"
+    __table_args__ = (
+        UniqueConstraint("token"),
+        UniqueConstraint("digest_id", "chat_id", "citation_index"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    token: Mapped[str] = mapped_column(String(32), nullable=False)
+    digest_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("digests.id"), nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    citation_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+class LinkClick(Base):
+    """Append-only record of a non-crawler visit to a tracked link."""
+
+    __tablename__ = "link_clicks"
+    __table_args__ = (
+        Index("ix_link_clicks_link_id_clicked_at", "link_id", text("clicked_at DESC")),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    link_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("digest_links.id"), nullable=False)
+    clicked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class DigestFeedback(Base):
     """Append-only explicit feedback on one delivered digest."""
 
@@ -231,6 +268,27 @@ class DigestFeedback(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=text("now()"),
+    )
+
+
+class UIEvent(Base):
+    """Append-only record of a Telegram UI action."""
+
+    __tablename__ = "ui_events"
+    __table_args__ = (
+        Index("ix_ui_events_chat_created", "chat_id", text("created_at DESC")),
+        Index("ix_ui_events_action_created", "action", text("created_at DESC")),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    digest_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("digests.id"), nullable=True
+    )
+    context: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
 
 

@@ -11,7 +11,7 @@ run:
 	uv run python -m engine version
 
 lint:
-	uv run ruff check . && uv run mypy engine delivery
+	uv run ruff check . && uv run mypy engine delivery web
 
 fmt:
 	uv run ruff format .

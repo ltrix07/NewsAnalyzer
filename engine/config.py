@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     thread_window_hours: int = 72
     thread_min_similarity: float = 0.50
     thread_max_candidates: int = 3
+    link_tracking_enabled: bool = False
+    redirect_base_url: str | None = None
     openai_model_relevance: str = "gpt-4o-mini"
     openai_model_consolidate: str = "gpt-4o-mini"
     openai_model_verify: str = "gpt-4o"
@@ -82,6 +84,14 @@ class Settings(BaseSettings):
             msg = "TELEGRAM_CHAT_ID is not configured"
             raise RuntimeError(msg)
         return self.telegram_chat_id
+
+    def require_redirect_base_url(self) -> str:
+        """Return the public redirect origin when link tracking is enabled."""
+
+        if self.redirect_base_url is None:
+            msg = "REDIRECT_BASE_URL is not configured while link tracking is enabled"
+            raise RuntimeError(msg)
+        return self.redirect_base_url.removesuffix("/")
 
     def require_tavily_key(self) -> str:
         """Return the Tavily API key or raise a clear runtime error."""

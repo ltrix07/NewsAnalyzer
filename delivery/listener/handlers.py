@@ -14,14 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from delivery.client import TelegramBotClient
 from delivery.keyboards import (
     FeedbackAction,
+    UIEventAction,
     build_digest_keyboard,
     build_dislike_reason_keyboard,
     parse_callback_data,
 )
 from delivery.strings import t
 from engine.config import Settings
+from engine.db import session_scope
 from engine.llm.client import LLMClient
-from engine.models import DigestFeedback, DiscussionPending, ResearchPending
+from engine.models import DigestFeedback, DiscussionPending, ResearchPending, UIEvent
 
 logger = structlog.get_logger(__name__)
 
@@ -141,7 +143,20 @@ async def _handle_callback_query(
 
     payload = parse_callback_data(data)
     if payload is None:
+        await _best_effort_log_ui_event(
+            chat_id=chat_id,
+            action="unknown_callback",
+            context={"data": data},
+        )
         return HandlerResult()
+
+    context = {"reason": payload.reason} if payload.action == "dislike_reason" else None
+    await _best_effort_log_ui_event(
+        chat_id=chat_id,
+        action=payload.action,
+        digest_id=payload.digest_id,
+        context=context,
+    )
 
     if payload.action in {"like", "dislike"}:
         feedback: FeedbackAction = "like" if payload.action == "like" else "dislike"
@@ -259,6 +274,14 @@ async def _handle_message(
     await session.delete(pending)
     await session.flush()
 
+    stripped_text = text.strip()
+    await _best_effort_log_ui_event(
+        chat_id=chat_id,
+        action="discussion_question",
+        digest_id=digest_id,
+        context={"question_length": len(stripped_text)},
+    )
+
     if now - created_at > DISCUSSION_PENDING_TTL:
         return HandlerResult(messages=[(chat_id, t("msg_question_expired", settings.ui_language))])
 
@@ -266,7 +289,7 @@ async def _handle_message(
         discussion=DiscussionRequest(
             chat_id=chat_id,
             digest_id=digest_id,
-            question=text.strip(),
+            question=stripped_text,
         )
     )
 
@@ -381,6 +404,27 @@ async def _best_effort_send_message(
         await telegram_client.send_message(chat_id, text)
     except Exception:
         logger.exception("telegram_send_message_failed")
+
+
+async def _best_effort_log_ui_event(
+    *,
+    chat_id: int,
+    action: UIEventAction,
+    digest_id: int | None = None,
+    context: dict[str, Any] | None = None,
+) -> None:
+    try:
+        async with session_scope() as event_session:
+            event_session.add(
+                UIEvent(
+                    chat_id=chat_id,
+                    action=action,
+                    digest_id=digest_id,
+                    context=context,
+                )
+            )
+    except Exception:
+        logger.exception("ui_event_logging_failed")
 
 
 def _chat_id_from_message(message: dict[str, Any]) -> int | None:

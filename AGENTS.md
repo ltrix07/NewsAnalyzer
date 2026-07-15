@@ -38,6 +38,7 @@ Do not introduce alternatives without explicit user approval.
 - Package manager: **uv**
 - Concurrency: **asyncio** (no Celery, Prefect, Airflow, or Temporal)
 - HTTP: **httpx** (async). Never `requests`.
+- Web service: **FastAPI** served by **uvicorn**.
 - RSS: **feedparser**
 - HTML extraction: **trafilatura**
 - Telegram ingestion: **Telethon** (MTProto). Bot API is for delivery only, not for reading channels.
@@ -92,6 +93,10 @@ delivery/
 ├── client.py              # Telegram Bot API wrapper using httpx
 ├── formatter.py           # Digest -> Telegram HTML message
 └── dispatcher.py          # Pull undelivered digests, send, mark delivered
+web/
+├── __init__.py
+├── __main__.py            # uvicorn entrypoint
+└── app.py                 # ASGI health and tracked-link redirects
 config/
 ├── sources.yaml           # source registry
 └── profiles/

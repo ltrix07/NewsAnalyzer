@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import html
+import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
 from sqlalchemy import Select, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from delivery.client import TelegramBotClient
@@ -20,8 +22,8 @@ from engine.consolidation_match import Adjudicator, default_adjudicator
 from engine.db import session_scope
 from engine.domain import Digest as DigestDTO
 from engine.models import Digest as DigestModel
+from engine.models import DigestLink, Impression
 from engine.models import Event as EventModel
-from engine.models import Impression
 from engine.ranking.taste import (
     blend_score,
     build_taste_vector,
@@ -216,6 +218,37 @@ def _impression_context(
     return context
 
 
+async def _mint_digest_links(digest: DigestDTO, chat_id: int) -> dict[int, str]:
+    """Mint or reuse all citation tokens in their own committed transaction.
+
+    Deliberately runs in a session of its own: tokens must be durable before the
+    message embedding them is sent, and a minting failure must not poison the
+    delivery session (a rollback there would expire the loaded digest rows).
+    """
+
+    if not digest.citations:
+        return {}
+    values = [
+        {
+            "token": secrets.token_urlsafe(16),
+            "digest_id": digest.id,
+            "chat_id": chat_id,
+            "citation_index": index,
+            "url": citation.url,
+            "source": citation.source,
+        }
+        for index, citation in enumerate(digest.citations)
+    ]
+    insert_statement = insert(DigestLink).values(values)
+    statement = insert_statement.on_conflict_do_update(
+        index_elements=["digest_id", "chat_id", "citation_index"],
+        set_={"token": DigestLink.token},
+    ).returning(DigestLink.citation_index, DigestLink.token)
+    async with session_scope() as link_session:
+        rows = (await link_session.execute(statement)).all()
+    return {citation_index: token for citation_index, token in rows}
+
+
 async def deliver_pending(
     limit: int | None = None,
     *,
@@ -238,7 +271,18 @@ async def deliver_pending(
             digest = DigestDTO.model_validate(digest_model)
             parent: ThreadParent | None = None
             try:
-                message = format_digest(digest)
+                link_urls: dict[int, str] | None = None
+                if settings.link_tracking_enabled:
+                    base_url = settings.require_redirect_base_url()
+                    try:
+                        tokens = await _mint_digest_links(digest, chat_id)
+                        link_urls = {
+                            index: f"{base_url}/r/{token}" for index, token in tokens.items()
+                        }
+                    except Exception:
+                        logger.warning("link_minting_failed", digest_id=digest_model.id)
+                        link_urls = None
+                message = format_digest(digest, link_urls)
                 if settings.thread_updates_enabled:
                     # Threading is best-effort: a failure in parent detection
                     # (e.g. the LLM adjudicator is down or rate-limited) must
@@ -323,7 +367,7 @@ async def deliver_pending(
                     ),
                 )
             )
-            await session.flush()
+            await session.commit()
             report.sent += 1
 
     return report
