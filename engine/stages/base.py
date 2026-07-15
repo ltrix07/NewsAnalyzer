@@ -44,6 +44,7 @@ class Context:
     run_id: UUID
     session: AsyncSession
     settings: Settings
+    profile_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +84,7 @@ class Stage(ABC, Generic[TIn, TOut]):
             stage_name=self.name,
             stage_version=self.version,
             draft=result.draft,
+            profile_name=ctx.profile_name,
         )
         return result
 
@@ -97,5 +99,6 @@ class Stage(ABC, Generic[TIn, TOut]):
                 stage_name=self.name,
                 stage_version=self.version,
                 draft=result.draft,
+                profile_name=ctx.profile_name,
             )
         return results

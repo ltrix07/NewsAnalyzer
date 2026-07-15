@@ -39,6 +39,7 @@ async def _load_latest_stage_decision(
     *,
     stage_name: str,
     event_id: int,
+    profile_name: str,
 ) -> DecisionModel | None:
     """Load the most recent decision row for one stage/event pair."""
 
@@ -50,6 +51,7 @@ async def _load_latest_stage_decision(
                 DecisionModel.stage_name == stage_name,
                 DecisionModel.target_type == "event",
                 DecisionModel.target_id == event_id,
+                DecisionModel.profile_name == profile_name,
             )
             .order_by(DecisionModel.created_at.desc(), DecisionModel.id.desc())
             .limit(1)
@@ -61,6 +63,7 @@ async def load_summarize_candidates(
     session: AsyncSession,
     *,
     limit: int | None = None,
+    profile_name: str,
 ) -> list[VerifiedEventDTO]:
     """Load verified events that do not yet have a summarize decision."""
 
@@ -69,6 +72,7 @@ async def load_summarize_candidates(
             DecisionModel.stage_name == "verify",
             DecisionModel.target_type == "event",
             DecisionModel.target_id == EventModel.id,
+            DecisionModel.profile_name == profile_name,
         )
     )
     has_summarize = exists(
@@ -76,6 +80,7 @@ async def load_summarize_candidates(
             DecisionModel.stage_name == "summarize",
             DecisionModel.target_type == "digest",
             DecisionModel.decision_json["event_id"].astext == sql_cast(EventModel.id, String),
+            DecisionModel.profile_name == profile_name,
         )
     )
     stmt = select(EventModel).where(has_verify, ~has_summarize).order_by(EventModel.id)
@@ -87,11 +92,13 @@ async def load_summarize_candidates(
             session,
             stage_name="relevance",
             event_id=event.id,
+            profile_name=profile_name,
         )
         verify_decision = await _load_latest_stage_decision(
             session,
             stage_name="verify",
             event_id=event.id,
+            profile_name=profile_name,
         )
 
         if relevance_decision is None or verify_decision is None:
@@ -147,14 +154,25 @@ async def summarize_command(
     started_at = perf_counter()
 
     async with session_scope() as session:
-        resolved_profile = await resolve_profile(profile or settings.profile_name, session)
+        username = profile or settings.profile_name
+        resolved_profile = await resolve_profile(username, session)
+        profile_name = username
         stage = SummarizeStage(
             make_llm_client(settings),
             resolved_profile,
             model or settings.openai_model_summarize,
         )
-        candidates = await load_summarize_candidates(session, limit=limit)
-        ctx = Context(run_id=resolved_run_id, session=session, settings=settings)
+        candidates = await load_summarize_candidates(
+            session,
+            limit=limit,
+            profile_name=profile_name,
+        )
+        ctx = Context(
+            run_id=resolved_run_id,
+            session=session,
+            settings=settings,
+            profile_name=profile_name,
+        )
 
         for verified_event in candidates:
             result = await stage.run(verified_event, ctx)

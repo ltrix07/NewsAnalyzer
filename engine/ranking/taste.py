@@ -43,6 +43,7 @@ def _unit(vector: np.ndarray) -> np.ndarray:
 async def build_taste_vector(
     session: AsyncSession,
     *,
+    chat_id: int,
     min_labels_per_class: int,
 ) -> TasteVector | None:
     """Build the Rocchio taste vector from the latest feedback per digest.
@@ -60,7 +61,8 @@ async def build_taste_vector(
                   SELECT df.*, row_number() OVER (
                            PARTITION BY digest_id, chat_id
                            ORDER BY created_at DESC, id DESC) AS rn
-                  FROM digest_feedback df)
+                  FROM digest_feedback df
+                  WHERE df.chat_id = :chat_id)
                 SELECT d.event_id, r.feedback
                 FROM ranked r JOIN digests d ON d.id = r.digest_id
                 WHERE r.rn = 1
@@ -68,7 +70,8 @@ async def build_taste_vector(
                        OR (r.feedback = 'dislike'
                            AND r.reason IS DISTINCT FROM 'weak_analysis'))
                 """
-            )
+            ),
+            {"chat_id": chat_id},
         )
     ).all()
     if not rows:

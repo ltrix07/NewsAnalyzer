@@ -24,6 +24,7 @@ from engine.config import Settings
 from engine.db import session_scope
 from engine.llm.client import LLMClient
 from engine.models import DeliveryBatch, DigestFeedback, DiscussionPending, ResearchPending, UIEvent
+from engine.users import get_user_by_chat_id
 
 logger = structlog.get_logger(__name__)
 
@@ -37,6 +38,7 @@ class DiscussionRequest:
     chat_id: int
     digest_id: int
     question: str
+    ui_language: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,12 +48,14 @@ class ResearchRequest:
     chat_id: int
     digest_id: int
     question: str
+    ui_language: str
 
 
 @dataclass(frozen=True, slots=True)
 class RevealRequest:
     chat_id: int
     batch_id: int
+    ui_language: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,12 +76,15 @@ async def handle_update(
     llm_client: LLMClient,
     update: dict[str, Any],
 ) -> HandlerResult:
-    """Process one Telegram update if it belongs to the configured chat."""
+    """Process one Telegram update if it belongs to an enabled user."""
 
-    expected_chat_id = settings.require_telegram_chat_id()
     chat_id = extract_chat_id(update)
-    if chat_id != expected_chat_id:
-        logger.info("telegram_update_ignored_foreign_chat", chat_id=chat_id)
+    if chat_id is None:
+        logger.info("listener_update_ignored_unknown_chat", chat_id=chat_id)
+        return HandlerResult()
+    user = await get_user_by_chat_id(chat_id, session)
+    if user is None or not user.enabled:
+        logger.info("listener_update_ignored_unknown_chat", chat_id=chat_id)
         return HandlerResult()
 
     callback_query = update.get("callback_query")
@@ -87,7 +94,8 @@ async def handle_update(
             settings=settings,
             telegram_client=telegram_client,
             callback_query=callback_query,
-            chat_id=expected_chat_id,
+            chat_id=chat_id,
+            ui_language=user.ui_language,
         )
 
     message = update.get("message")
@@ -96,7 +104,8 @@ async def handle_update(
             session=session,
             settings=settings,
             message=message,
-            chat_id=expected_chat_id,
+            chat_id=chat_id,
+            ui_language=user.ui_language,
         )
 
     return HandlerResult()
@@ -142,6 +151,7 @@ async def _handle_callback_query(
     telegram_client: TelegramBotClient,
     callback_query: dict[str, Any],
     chat_id: int,
+    ui_language: str,
 ) -> HandlerResult:
     callback_query_id = callback_query.get("id")
     data = callback_query.get("data")
@@ -179,9 +189,15 @@ async def _handle_callback_query(
             batch.opened_at = datetime.now(UTC)
             await session.flush()
         await _best_effort_answer_callback(
-            telegram_client, callback_query_id, t("ack_like", settings.ui_language)
+            telegram_client, callback_query_id, t("ack_like", ui_language)
         )
-        return HandlerResult(reveal=RevealRequest(chat_id=chat_id, batch_id=batch.id))
+        return HandlerResult(
+            reveal=RevealRequest(
+                chat_id=chat_id,
+                batch_id=batch.id,
+                ui_language=ui_language,
+            )
+        )
 
     if payload.digest_id is None:
         return HandlerResult()
@@ -203,21 +219,21 @@ async def _handle_callback_query(
             telegram_client,
             callback_query_id,
             (
-                t("ack_dislike_reason_prompt", settings.ui_language)
+                t("ack_dislike_reason_prompt", ui_language)
                 if feedback == "dislike"
-                else t("ack_like", settings.ui_language)
+                else t("ack_like", ui_language)
             ),
         )
         message = callback_query.get("message")
         message_id = _message_id(message)
         if message_id is not None:
             reply_markup = (
-                build_dislike_reason_keyboard(payload.digest_id, lang=settings.ui_language)
+                build_dislike_reason_keyboard(payload.digest_id, lang=ui_language)
                 if feedback == "dislike"
                 else build_digest_keyboard(
                     payload.digest_id,
                     selected_feedback=feedback,
-                    lang=settings.ui_language,
+                    lang=ui_language,
                 )
             )
             await _best_effort_edit_reply_markup(
@@ -237,7 +253,7 @@ async def _handle_callback_query(
         await _best_effort_answer_callback(
             telegram_client,
             callback_query_id,
-            t("ack_like", settings.ui_language),
+            t("ack_like", ui_language),
         )
         message = callback_query.get("message")
         message_id = _message_id(message)
@@ -249,7 +265,7 @@ async def _handle_callback_query(
                 build_digest_keyboard(
                     payload.digest_id,
                     selected_feedback="dislike",
-                    lang=settings.ui_language,
+                    lang=ui_language,
                 ),
             )
         return HandlerResult()
@@ -262,18 +278,19 @@ async def _handle_callback_query(
             callback_query_id=callback_query_id,
             chat_id=chat_id,
             digest_id=payload.digest_id,
+            ui_language=ui_language,
         )
 
     await _upsert_discussion_pending(session, chat_id=chat_id, digest_id=payload.digest_id)
     await _best_effort_answer_callback(
         telegram_client,
         callback_query_id,
-        t("ack_discussion", settings.ui_language),
+        t("ack_discussion", ui_language),
     )
     await _best_effort_send_message(
         telegram_client,
         chat_id,
-        t("msg_ask_question", settings.ui_language),
+        t("msg_ask_question", ui_language),
     )
     return HandlerResult()
 
@@ -284,6 +301,7 @@ async def _handle_message(
     settings: Settings,
     message: dict[str, Any],
     chat_id: int,
+    ui_language: str,
 ) -> HandlerResult:
     text = message.get("text")
     if not isinstance(text, str) or not text.strip():
@@ -311,13 +329,14 @@ async def _handle_message(
     )
 
     if now - created_at > DISCUSSION_PENDING_TTL:
-        return HandlerResult(messages=[(chat_id, t("msg_question_expired", settings.ui_language))])
+        return HandlerResult(messages=[(chat_id, t("msg_question_expired", ui_language))])
 
     return HandlerResult(
         discussion=DiscussionRequest(
             chat_id=chat_id,
             digest_id=digest_id,
             question=stripped_text,
+            ui_language=ui_language,
         )
     )
 
@@ -349,6 +368,7 @@ async def _handle_research_callback(
     callback_query_id: str,
     chat_id: int,
     digest_id: int,
+    ui_language: str,
 ) -> HandlerResult:
     pending = await session.get(ResearchPending, chat_id)
     now = datetime.now(UTC)
@@ -356,12 +376,12 @@ async def _handle_research_callback(
         await _best_effort_answer_callback(
             telegram_client,
             callback_query_id,
-            t("ack_research_stale", settings.ui_language),
+            t("ack_research_stale", ui_language),
         )
         await _best_effort_send_message(
             telegram_client,
             chat_id,
-            t("msg_research_expired", settings.ui_language),
+            t("msg_research_expired", ui_language),
         )
         return HandlerResult()
 
@@ -377,25 +397,26 @@ async def _handle_research_callback(
         await _best_effort_answer_callback(
             telegram_client,
             callback_query_id,
-            t("ack_research_stale", settings.ui_language),
+            t("ack_research_stale", ui_language),
         )
         await _best_effort_send_message(
             telegram_client,
             chat_id,
-            t("msg_research_expired", settings.ui_language),
+            t("msg_research_expired", ui_language),
         )
         return HandlerResult()
 
     await _best_effort_answer_callback(
         telegram_client,
         callback_query_id,
-        t("ack_research_searching", settings.ui_language),
+        t("ack_research_searching", ui_language),
     )
     return HandlerResult(
         research=ResearchRequest(
             chat_id=chat_id,
             digest_id=digest_id,
             question=question,
+            ui_language=ui_language,
         )
     )
 

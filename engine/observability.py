@@ -60,6 +60,7 @@ async def record_decision(
     stage_name: str,
     stage_version: str,
     draft: DecisionDraft,
+    profile_name: str | None = None,
 ) -> int:
     """Persist a decision row and return its id. Flushes the session."""
 
@@ -69,6 +70,7 @@ async def record_decision(
         stage_version=stage_version,
         target_type=draft.target_type,
         target_id=draft.target_id,
+        profile_name=profile_name,
         model=draft.model,
         input_tokens=draft.input_tokens,
         output_tokens=draft.output_tokens,

@@ -25,7 +25,7 @@ from engine.config import Settings, get_settings
 from engine.consolidation_match import Adjudicator, default_adjudicator
 from engine.db import session_scope
 from engine.domain import Digest as DigestDTO
-from engine.models import DeliveryBatch, DigestLink, Impression
+from engine.models import DeliveryBatch, DigestLink, Impression, User
 from engine.models import Digest as DigestModel
 from engine.models import Event as EventModel
 from engine.ranking.taste import (
@@ -35,6 +35,7 @@ from engine.ranking.taste import (
     significance_score,
     taste_cosine,
 )
+from engine.users import get_user_by_username, list_enabled_users
 
 logger = structlog.get_logger(__name__)
 
@@ -68,10 +69,15 @@ def _build_client() -> TelegramBotClient:
     return TelegramBotClient(settings.require_telegram_token())
 
 
-def _pending_digests_query(limit: int | None = None) -> Select[tuple[DigestModel]]:
+def _pending_digests_query(
+    profile_name: str, limit: int | None = None
+) -> Select[tuple[DigestModel]]:
     statement = (
         select(DigestModel)
-        .where(DigestModel.delivered_at.is_(None))
+        .where(
+            DigestModel.delivered_at.is_(None),
+            DigestModel.profile_name == profile_name,
+        )
         .order_by(DigestModel.created_at.asc())
     )
     if limit is not None:
@@ -83,6 +89,7 @@ async def _rank_pending_digests(
     session: AsyncSession,
     digests: list[DigestModel],
     settings: Settings,
+    chat_id: int,
 ) -> list[RankedDigest]:
     """Order pending digests by blended taste + significance (major tier first).
 
@@ -96,6 +103,7 @@ async def _rank_pending_digests(
 
     taste = await build_taste_vector(
         session,
+        chat_id=chat_id,
         min_labels_per_class=settings.taste_min_labels_per_class,
     )
     event_ids = {digest.event_id for digest in digests}
@@ -151,6 +159,7 @@ async def _find_thread_parent(
     digest_model: DigestModel,
     settings: Settings,
     adjudicator: Adjudicator,
+    profile_name: str,
 ) -> ThreadParent | None:
     """Find the most recent delivered same-story message to reply to."""
 
@@ -170,6 +179,7 @@ async def _find_thread_parent(
                 DigestModel.delivered_at >= cutoff,
                 DigestModel.telegram_message_id.is_not(None),
                 DigestModel.event_id != digest_model.event_id,
+                DigestModel.profile_name == profile_name,
             )
             .order_by(distance_expr)
             .limit(settings.thread_max_candidates)
@@ -259,6 +269,7 @@ async def reveal_digest(
     client: TelegramBotClient,
     settings: Settings,
     chat_id: int,
+    ui_language: str,
     item: RankedDigest,
     parent: ThreadParent | None = None,
 ) -> None:
@@ -276,10 +287,10 @@ async def reveal_digest(
             logger.warning("link_minting_failed", digest_id=digest_model.id)
 
     message = await format_digest(digest, session, link_urls)
-    reply_markup = build_digest_keyboard(digest_model.id, lang=settings.ui_language)
+    reply_markup = build_digest_keyboard(digest_model.id, lang=ui_language)
     if parent is not None:
         header = (
-            f"{t('thread_update_header', settings.ui_language)}{html.escape(parent.headline)}\n\n"
+            f"{t('thread_update_header', ui_language)}{html.escape(parent.headline)}\n\n"
         )
         try:
             response = await client.send_message(
@@ -323,10 +334,10 @@ async def _upsert_batch_notification(
     client: TelegramBotClient,
     batch: DeliveryBatch,
     count: int,
-    settings: Settings,
+    ui_language: str,
 ) -> None:
-    text = t("batch_notification", settings.ui_language).format(count=count)
-    keyboard = build_reveal_keyboard(batch.id, lang=settings.ui_language)
+    text = t("batch_notification", ui_language).format(count=count)
+    keyboard = build_reveal_keyboard(batch.id, lang=ui_language)
     try:
         if batch.notification_message_id is None:
             response = await client.send_message(batch.chat_id, text, reply_markup=keyboard)
@@ -345,6 +356,7 @@ async def _maybe_nudge_batch(
     client: TelegramBotClient,
     batch: DeliveryBatch,
     settings: Settings,
+    ui_language: str,
 ) -> None:
     if batch.opened_at is not None or batch.notified_at is None:
         return
@@ -362,7 +374,7 @@ async def _maybe_nudge_batch(
     try:
         await client.send_message(
             batch.chat_id,
-            t("batch_nudge", settings.ui_language).format(count=count or 0),
+            t("batch_nudge", ui_language).format(count=count or 0),
         )
         batch.last_nudge_at = now
     except Exception:
@@ -375,9 +387,11 @@ async def reveal_batch_page(
     chat_id: int,
     client: TelegramBotClient,
     settings: Settings,
+    ui_language: str | None = None,
 ) -> None:
     """Reveal one ranked page after the callback transaction has committed."""
 
+    language = ui_language or settings.ui_language
     async with session_scope() as session:
         batch = await session.get(DeliveryBatch, batch_id)
         if batch is None or batch.chat_id != chat_id or batch.closed_at is not None:
@@ -392,7 +406,7 @@ async def reveal_batch_page(
                 )
             ).all()
         )
-        ranked = await _rank_pending_digests(session, digests, settings)
+        ranked = await _rank_pending_digests(session, digests, settings, chat_id)
         for item in ranked[: settings.batch_reveal_page_size]:
             try:
                 await reveal_digest(
@@ -400,6 +414,7 @@ async def reveal_batch_page(
                     client=client,
                     settings=settings,
                     chat_id=chat_id,
+                    ui_language=language,
                     item=item,
                 )
                 await session.commit()
@@ -416,9 +431,9 @@ async def reveal_batch_page(
             try:
                 await client.send_message(
                     chat_id,
-                    t("btn_show_more", settings.ui_language).format(count=remaining),
+                    t("btn_show_more", language).format(count=remaining),
                     reply_markup=build_reveal_more_keyboard(
-                        batch_id, remaining, lang=settings.ui_language
+                        batch_id, remaining, lang=language
                     ),
                 )
             except Exception:
@@ -432,96 +447,147 @@ async def reveal_batch_page(
                 await client.edit_message_text(
                     chat_id,
                     batch.notification_message_id,
-                    t("batch_all_shown", settings.ui_language),
+                    t("batch_all_shown", language),
                 )
             except Exception:
                 logger.exception("batch_terminal_edit_failed", batch_id=batch_id)
 
 
+async def _deliver_for_user(
+    session: AsyncSession,
+    user: User,
+    client: TelegramBotClient,
+    adjudicator: Adjudicator,
+    settings: Settings,
+    report: DeliveryReport,
+    limit: int | None,
+) -> None:
+    """Deliver one enabled user's pending digests in isolation."""
+
+    if user.chat_id is None:
+        return
+    sent_before = report.sent
+    failed_before = report.failed
+    digests = list(
+        (await session.scalars(_pending_digests_query(user.username, limit))).all()
+    )
+    ranked = await _rank_pending_digests(session, digests, settings, user.chat_id)
+    open_batch: DeliveryBatch | None = None
+    batch_gained = False
+    if settings.batched_delivery_enabled:
+        open_batch = await session.scalar(
+            select(DeliveryBatch).where(
+                DeliveryBatch.chat_id == user.chat_id, DeliveryBatch.closed_at.is_(None)
+            )
+        )
+
+    for item in ranked:
+        digest_model = item.digest
+        if settings.batched_delivery_enabled and digest_model.batch_id is not None:
+            continue
+        parent: ThreadParent | None = None
+        try:
+            if settings.thread_updates_enabled:
+                try:
+                    parent = await _find_thread_parent(
+                        session,
+                        digest_model,
+                        settings,
+                        adjudicator,
+                        user.username,
+                    )
+                except Exception:
+                    logger.warning("thread_parent_detection_failed", digest_id=digest_model.id)
+
+            if settings.batched_delivery_enabled and parent is None:
+                if open_batch is None:
+                    open_batch = DeliveryBatch(chat_id=user.chat_id)
+                    session.add(open_batch)
+                    await session.flush()
+                digest_model.batch_id = open_batch.id
+                batch_gained = True
+                continue
+
+            await reveal_digest(
+                session=session,
+                client=client,
+                settings=settings,
+                chat_id=user.chat_id,
+                ui_language=user.ui_language,
+                item=item,
+                parent=parent,
+            )
+        except Exception:
+            report.failed += 1
+            logger.exception(
+                "delivery_send_failed",
+                username=user.username,
+                digest_id=digest_model.id,
+                event_id=digest_model.event_id,
+            )
+            continue
+        await session.commit()
+        report.sent += 1
+
+    if settings.batched_delivery_enabled and open_batch is not None:
+        if batch_gained or open_batch.notification_message_id is None:
+            count = await session.scalar(
+                select(func.count())
+                .select_from(DigestModel)
+                .where(
+                    DigestModel.batch_id == open_batch.id,
+                    DigestModel.delivered_at.is_(None),
+                )
+            )
+            await _upsert_batch_notification(client, open_batch, count or 0, user.ui_language)
+        await _maybe_nudge_batch(session, client, open_batch, settings, user.ui_language)
+        await session.commit()
+
+    logger.info(
+        "user_delivery_completed",
+        username=user.username,
+        sent=report.sent - sent_before,
+        failed=report.failed - failed_before,
+    )
+
+
 async def deliver_pending(
     limit: int | None = None,
     *,
+    profile_name: str | None = None,
     client: TelegramBotClient | None = None,
     adjudicator: Adjudicator | None = None,
 ) -> DeliveryReport:
-    """Send undelivered digests to Telegram and persist delivery timestamps."""
+    """Send pending digests for one or all enabled users."""
 
     settings = get_settings()
-    chat_id = settings.require_telegram_chat_id()
     resolved_client = client or _build_client()
     resolved_adjudicator = adjudicator or default_adjudicator(settings)
     report = DeliveryReport(sent=0, failed=0, skipped=0)
 
     async with session_scope() as session:
-        digests = list((await session.scalars(_pending_digests_query(limit))).all())
-        ranked = await _rank_pending_digests(session, digests, settings)
-        open_batch: DeliveryBatch | None = None
-        batch_gained = False
-        if settings.batched_delivery_enabled:
-            open_batch = await session.scalar(
-                select(DeliveryBatch).where(
-                    DeliveryBatch.chat_id == chat_id, DeliveryBatch.closed_at.is_(None)
-                )
-            )
+        if profile_name is None:
+            users = await list_enabled_users(session)
+        else:
+            user = await get_user_by_username(profile_name, session)
+            users = [user] if user is not None and user.enabled else []
 
-        for item in ranked:
-            digest_model = item.digest
-            if settings.batched_delivery_enabled and digest_model.batch_id is not None:
+        for user in users:
+            if user.chat_id is None:
                 continue
-            parent: ThreadParent | None = None
             try:
-                if settings.thread_updates_enabled:
-                    try:
-                        parent = await _find_thread_parent(
-                            session,
-                            digest_model,
-                            settings,
-                            resolved_adjudicator,
-                        )
-                    except Exception:
-                        logger.warning("thread_parent_detection_failed", digest_id=digest_model.id)
-
-                if settings.batched_delivery_enabled and parent is None:
-                    if open_batch is None:
-                        open_batch = DeliveryBatch(chat_id=chat_id)
-                        session.add(open_batch)
-                        await session.flush()
-                    digest_model.batch_id = open_batch.id
-                    batch_gained = True
-                    continue
-
-                await reveal_digest(
-                    session=session,
-                    client=resolved_client,
-                    settings=settings,
-                    chat_id=chat_id,
-                    item=item,
-                    parent=parent,
+                await _deliver_for_user(
+                    session,
+                    user,
+                    resolved_client,
+                    resolved_adjudicator,
+                    settings,
+                    report,
+                    limit,
                 )
             except Exception:
-                report.failed += 1
-                logger.exception(
-                    "delivery_send_failed",
-                    digest_id=digest_model.id,
-                    event_id=digest_model.event_id,
-                )
-                continue
-            await session.commit()
-            report.sent += 1
-
-        if settings.batched_delivery_enabled and open_batch is not None:
-            if batch_gained or open_batch.notification_message_id is None:
-                count = await session.scalar(
-                    select(func.count())
-                    .select_from(DigestModel)
-                    .where(
-                        DigestModel.batch_id == open_batch.id,
-                        DigestModel.delivered_at.is_(None),
-                    )
-                )
-                await _upsert_batch_notification(resolved_client, open_batch, count or 0, settings)
-            await _maybe_nudge_batch(session, resolved_client, open_batch, settings)
-            await session.commit()
+                await session.rollback()
+                logger.exception("user_delivery_failed", username=user.username)
 
     return report
 

@@ -25,6 +25,7 @@ from engine.cli.summarize import summarize_command
 from engine.cli.verify import verify_command
 from engine.db import session_scope
 from engine.models import Decision
+from engine.users import list_enabled_users
 
 logger = structlog.get_logger(__name__)
 
@@ -39,6 +40,8 @@ STAGE_ORDER = (
     "verify",
     "summarize",
 )
+SHARED_STAGE_ORDER = STAGE_ORDER[:5]
+PER_USER_STAGE_ORDER = STAGE_ORDER[5:]
 DECISION_STAGE_TO_PIPELINE_STAGE = {
     "keyword_filter": "filter",
     "relevance": "score",
@@ -96,6 +99,13 @@ def _stage_calls(
     }
 
 
+async def _load_enabled_profile_names() -> list[str]:
+    """Load enabled profile slugs in stable order for the cron fan-out."""
+
+    async with session_scope() as session:
+        return [user.username for user in await list_enabled_users(session)]
+
+
 async def _load_decisions_by_run_id(run_id: UUID) -> list[Decision]:
     """Load every persisted decision row for one orchestrator run."""
 
@@ -146,7 +156,7 @@ async def run_once(
     started_at = datetime.now(UTC)
     started_perf = perf_counter()
     outcomes: dict[str, StageOutcome] = {}
-    stage_calls = _stage_calls(
+    shared_stage_calls = _stage_calls(
         run_id=run_id,
         source=source,
         limit_score=limit_score,
@@ -157,32 +167,68 @@ async def run_once(
     bound_contextvars = structlog.contextvars.bind_contextvars(run_id=str(run_id))
     halted = False
 
+    async def run_stage(
+        stage_name: str,
+        stage_call: Callable[[], Awaitable[None]],
+    ) -> None:
+        nonlocal halted
+        stage_started = perf_counter()
+        try:
+            await stage_call()
+        except Exception as exc:
+            elapsed = perf_counter() - stage_started
+            logger.exception(
+                "pipeline_stage_failed",
+                stage=stage_name,
+                exception_type=type(exc).__name__,
+            )
+            previous = outcomes.get(stage_name)
+            outcomes[stage_name] = StageOutcome(
+                status="error",
+                error=str(exc)[:200],
+                elapsed_seconds=elapsed + (previous.elapsed_seconds if previous else 0.0),
+            )
+            if stop_on_error:
+                halted = True
+        else:
+            elapsed = perf_counter() - stage_started
+            previous = outcomes.get(stage_name)
+            if previous is None:
+                outcomes[stage_name] = StageOutcome(status="ok", elapsed_seconds=elapsed)
+            else:
+                previous.elapsed_seconds += elapsed
+
     try:
-        for stage_name in STAGE_ORDER:
+        for stage_name in SHARED_STAGE_ORDER:
             if halted or stage_name in skip:
                 outcomes[stage_name] = StageOutcome(status="skipped", elapsed_seconds=0.0)
                 continue
+            await run_stage(stage_name, shared_stage_calls[stage_name])
 
-            stage_started = perf_counter()
-            try:
-                await stage_calls[stage_name]()
-            except Exception as exc:
-                elapsed = perf_counter() - stage_started
-                logger.exception(
-                    "pipeline_stage_failed",
-                    stage=stage_name,
-                    exception_type=type(exc).__name__,
-                )
-                outcomes[stage_name] = StageOutcome(
-                    status="error",
-                    error=str(exc)[:200],
-                    elapsed_seconds=elapsed,
-                )
-                if stop_on_error:
-                    halted = True
-            else:
-                elapsed = perf_counter() - stage_started
-                outcomes[stage_name] = StageOutcome(status="ok", elapsed_seconds=elapsed)
+        profile_names = (
+            [profile_name] if profile_name is not None else await _load_enabled_profile_names()
+        )
+        if not profile_names:
+            for stage_name in PER_USER_STAGE_ORDER:
+                outcomes[stage_name] = StageOutcome(status="skipped", elapsed_seconds=0.0)
+
+        for current_profile_name in profile_names:
+            per_user_stage_calls = _stage_calls(
+                run_id=run_id,
+                source=source,
+                limit_score=limit_score,
+                limit_verify=limit_verify,
+                limit_summarize=limit_summarize,
+                profile_name=current_profile_name,
+            )
+            for stage_name in PER_USER_STAGE_ORDER:
+                if halted or stage_name in skip:
+                    outcomes.setdefault(
+                        stage_name,
+                        StageOutcome(status="skipped", elapsed_seconds=0.0),
+                    )
+                    continue
+                await run_stage(stage_name, per_user_stage_calls[stage_name])
     finally:
         structlog.contextvars.reset_contextvars(**bound_contextvars)
 

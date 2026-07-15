@@ -21,9 +21,9 @@ from engine.llm.client import make_llm_client
 from engine.llm.schemas import RelevanceVerdict
 from engine.models import Decision as DecisionModel
 from engine.models import Event as EventModel
-from engine.profile import load_profile
 from engine.stages.base import Context
 from engine.stages.verify import VerifyStage
+from engine.users import resolve_profile
 
 LIMIT_OPTION = typer.Option(default=None, min=1, help="Process at most this many events.")
 PROFILE_OPTION = typer.Option(default=None, help="Override the configured profile name.")
@@ -33,6 +33,7 @@ MODEL_OPTION = typer.Option(default=None, help="Override the configured OpenAI m
 async def _load_latest_relevance_decision(
     session: AsyncSession,
     event_id: int,
+    profile_name: str,
 ) -> DecisionModel | None:
     """Load the most recent relevance decision for one event."""
 
@@ -44,6 +45,7 @@ async def _load_latest_relevance_decision(
                 DecisionModel.stage_name == "relevance",
                 DecisionModel.target_type == "event",
                 DecisionModel.target_id == event_id,
+                DecisionModel.profile_name == profile_name,
             )
             .order_by(DecisionModel.created_at.desc(), DecisionModel.id.desc())
             .limit(1)
@@ -56,6 +58,7 @@ async def load_verify_candidates(
     *,
     limit: int | None = None,
     event_id: int | None = None,
+    profile_name: str,
 ) -> list[ScoredEventDTO]:
     """Load relevance-approved events that have not yet been verified."""
 
@@ -64,6 +67,7 @@ async def load_verify_candidates(
             DecisionModel.stage_name == "relevance",
             DecisionModel.target_type == "event",
             DecisionModel.target_id == EventModel.id,
+            DecisionModel.profile_name == profile_name,
         )
     )
     has_verify = exists(
@@ -71,6 +75,7 @@ async def load_verify_candidates(
             DecisionModel.stage_name == "verify",
             DecisionModel.target_type == "event",
             DecisionModel.target_id == EventModel.id,
+            DecisionModel.profile_name == profile_name,
         )
     )
     stmt = select(EventModel).where(has_any_relevance, ~has_verify).order_by(EventModel.id)
@@ -80,7 +85,7 @@ async def load_verify_candidates(
     events = (await session.scalars(stmt)).all()
     candidates: list[ScoredEventDTO] = []
     for event in events:
-        latest_relevance = await _load_latest_relevance_decision(session, event.id)
+        latest_relevance = await _load_latest_relevance_decision(session, event.id, profile_name)
         if latest_relevance is None:
             continue
 
@@ -111,7 +116,6 @@ async def verify_command(
     """Verify relevant events that have not yet been processed by the verify stage."""
 
     settings = get_settings()
-    load_profile(profile or settings.profile_name, settings.profile_root)
     stage = VerifyStage(make_llm_client(settings), model or settings.openai_model_verify)
     resolved_run_id = run_id or uuid4()
     action_counts: Counter[str] = Counter()
@@ -120,8 +124,20 @@ async def verify_command(
     started_at = perf_counter()
 
     async with session_scope() as session:
-        candidates = await load_verify_candidates(session, limit=limit)
-        ctx = Context(run_id=resolved_run_id, session=session, settings=settings)
+        username = profile or settings.profile_name
+        await resolve_profile(username, session)
+        profile_name = username
+        candidates = await load_verify_candidates(
+            session,
+            limit=limit,
+            profile_name=profile_name,
+        )
+        ctx = Context(
+            run_id=resolved_run_id,
+            session=session,
+            settings=settings,
+            profile_name=profile_name,
+        )
 
         for scored_event in candidates:
             result = await stage.run(scored_event, ctx)

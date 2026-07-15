@@ -31,10 +31,13 @@ async def _list_pending(limit: int | None) -> None:
 
 
 @app.command("send")
-def send_command(limit: int | None = typer.Option(default=None, min=1)) -> None:
+def send_command(
+    limit: int | None = typer.Option(default=None, min=1),
+    profile_name: str | None = typer.Option(None, "--profile"),
+) -> None:
     """Send pending digests to Telegram."""
 
-    report = asyncio.run(deliver_pending(limit=limit))
+    report = asyncio.run(deliver_pending(limit=limit, profile_name=profile_name))
     typer.echo(f"sent={report.sent} failed={report.failed} skipped={report.skipped}")
 
 

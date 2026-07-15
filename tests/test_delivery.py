@@ -67,6 +67,202 @@ from engine.search.tavily import SearchResult, TavilyClient
 from engine.stages._event_context import EventArticle
 
 
+@pytest.mark.asyncio
+async def test_multiuser_delivery_isolated_by_profile_chat_language_and_failure(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = await db_session.scalar(select(User).where(User.username == "volodymyr"))
+    assert primary is not None
+    primary.ui_language = "ru"
+    db_session.add(
+        User(
+            username="english",
+            chat_id=222222,
+            profile=primary.profile,
+            ui_language="en",
+        )
+    )
+    event_a = await _create_event(db_session)
+    event_b = await _create_event(db_session)
+    digest_a = await _create_digest_row(
+        db_session,
+        event_id=event_a.id,
+        headline="Russian digest",
+        profile_name="volodymyr",
+    )
+    digest_b = await _create_digest_row(
+        db_session,
+        event_id=event_b.id,
+        headline="English digest",
+        profile_name="english",
+    )
+    calls: list[tuple[int, str, dict[str, Any] | None]] = []
+
+    class FakeClient:
+        async def send_message(
+            self,
+            chat_id: int,
+            text: str,
+            *,
+            reply_markup: dict[str, Any] | None = None,
+            **_: Any,
+        ) -> dict[str, Any]:
+            calls.append((chat_id, text, reply_markup))
+            return {"ok": True}
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "thread_updates_enabled", False)
+    monkeypatch.setattr(settings, "batched_delivery_enabled", False)
+    monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
+
+    report = await deliver_pending(client=FakeClient())  # type: ignore[arg-type]
+
+    assert report.sent == 2
+    routed_headlines = [
+        (chat_id, "Russian digest" in text, "English digest" in text)
+        for chat_id, text, _ in calls
+    ]
+    assert routed_headlines == [
+        (222222, False, True),
+        (123456, True, False),
+    ]
+    assert calls[0][2] == build_digest_keyboard(digest_b.id, lang="en")
+    assert calls[1][2] == build_digest_keyboard(digest_a.id, lang="ru")
+
+
+@pytest.mark.asyncio
+async def test_multiuser_delivery_failure_and_missing_chat_do_not_block_other_users(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = await db_session.scalar(select(User).where(User.username == "volodymyr"))
+    assert primary is not None
+    db_session.add_all(
+        [
+            User(username="english", chat_id=222222, profile=primary.profile, ui_language="en"),
+            User(username="waiting", chat_id=None, profile=primary.profile),
+        ]
+    )
+    for username in ("volodymyr", "english", "waiting"):
+        event = await _create_event(db_session)
+        await _create_digest_row(
+            db_session,
+            event_id=event.id,
+            headline=username,
+            profile_name=username,
+        )
+    calls: list[int] = []
+
+    class FailingClient:
+        async def send_message(self, chat_id: int, *_: Any, **__: Any) -> dict[str, Any]:
+            calls.append(chat_id)
+            if chat_id == 123456:
+                raise RuntimeError("chat unavailable")
+            return {"ok": True}
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "thread_updates_enabled", False)
+    monkeypatch.setattr(settings, "batched_delivery_enabled", False)
+    monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
+
+    report = await deliver_pending(client=FailingClient())  # type: ignore[arg-type]
+
+    assert calls == [222222, 123456]
+    assert report.sent == 1
+    assert report.failed == 1
+
+
+@pytest.mark.asyncio
+async def test_listener_resolves_enabled_user_language_and_ignores_unknown_or_disabled(
+    db_session: AsyncSession,
+) -> None:
+    primary = await db_session.scalar(select(User).where(User.username == "volodymyr"))
+    assert primary is not None
+    primary.ui_language = "en"
+    disabled = User(
+        username="disabled",
+        chat_id=333333,
+        profile=primary.profile,
+        ui_language="ru",
+        enabled=False,
+    )
+    db_session.add(disabled)
+    event = await _create_event(db_session)
+    digest = await _create_digest_row(db_session, event_id=event.id, headline="Known")
+    answers: list[str] = []
+
+    class FakeClient:
+        async def answer_callback_query(self, _callback_id: str, text: str) -> dict[str, Any]:
+            answers.append(text)
+            return {"ok": True}
+
+        async def edit_message_reply_markup(self, *_: Any, **__: Any) -> dict[str, Any]:
+            return {"ok": True}
+
+    settings = delivery_client.get_settings()
+    known = {
+        "callback_query": {
+            "id": "known",
+            "data": build_feedback_callback("like", digest.id),
+            "message": {"message_id": 1, "chat": {"id": 123456}},
+        }
+    }
+    await handle_update(
+        session=db_session,
+        settings=settings,
+        telegram_client=FakeClient(),  # type: ignore[arg-type]
+        llm_client=object(),  # type: ignore[arg-type]
+        update=known,
+    )
+    for chat_id in (999999, 333333):
+        ignored = await handle_update(
+            session=db_session,
+            settings=settings,
+            telegram_client=FakeClient(),  # type: ignore[arg-type]
+            llm_client=object(),  # type: ignore[arg-type]
+            update={"message": {"chat": {"id": chat_id}, "text": "ignored"}},
+        )
+        assert ignored == listener_handlers.HandlerResult()
+
+    assert answers == ["Saved ✓"]
+
+
+@pytest.mark.asyncio
+async def test_taste_vector_isolated_by_chat_id(db_session: AsyncSession) -> None:
+    liked_event = await _create_event(db_session, centroid=_axis_centroid(0))
+    disliked_event = await _create_event(db_session, centroid=_axis_centroid(1))
+    liked = await _create_digest_row(db_session, event_id=liked_event.id, headline="Liked")
+    disliked = await _create_digest_row(
+        db_session,
+        event_id=disliked_event.id,
+        headline="Disliked",
+    )
+    db_session.add_all(
+        [
+            DigestFeedback(digest_id=liked.id, chat_id=123456, feedback="like"),
+            DigestFeedback(digest_id=disliked.id, chat_id=123456, feedback="dislike"),
+        ]
+    )
+    await db_session.flush()
+
+    user_a = await build_taste_vector(db_session, chat_id=123456, min_labels_per_class=1)
+    user_b = await build_taste_vector(db_session, chat_id=222222, min_labels_per_class=1)
+
+    assert user_a is not None
+    assert user_a.n_like == 1
+    assert user_a.n_dislike == 1
+    assert user_b is None
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _use_listener_test_session(
     db_session: AsyncSession,
@@ -80,7 +276,13 @@ async def _use_listener_test_session(
 
     monkeypatch.setattr(listener_handlers, "session_scope", fake_session_scope)
     profile = load_profile("volodymyr", Path("config/profiles"))
-    db_session.add(User(username="volodymyr", profile=profile.model_dump(mode="json")))
+    db_session.add(
+        User(
+            username="volodymyr",
+            chat_id=123456,
+            profile=profile.model_dump(mode="json"),
+        )
+    )
     await db_session.flush()
 
 
@@ -146,6 +348,7 @@ async def _create_digest_row(
     *,
     event_id: int,
     headline: str,
+    profile_name: str = "volodymyr",
     delivered_at: datetime | None = None,
     confidence_level: str = "medium",
     created_at: datetime | None = None,
@@ -153,7 +356,7 @@ async def _create_digest_row(
 ) -> Digest:
     digest = Digest(
         event_id=event_id,
-        profile_name="volodymyr",
+        profile_name=profile_name,
         headline=headline,
         summary=f"Summary for {headline}",
         why_it_matters=f"Why {headline}",
@@ -582,7 +785,13 @@ async def test_reveal_page_records_impressions_and_closes_batch(
     monkeypatch.setattr(settings, "link_tracking_enabled", False)
     monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
 
-    await reveal_batch_page(batch_id=batch.id, chat_id=123456, client=client, settings=settings)
+    await reveal_batch_page(
+        batch_id=batch.id,
+        chat_id=123456,
+        client=client,
+        settings=settings,
+        ui_language="ru",
+    )
 
     assert await db_session.scalar(select(func.count()).select_from(Impression)) == 2
     assert batch.closed_at is not None
@@ -1097,7 +1306,7 @@ async def test_taste_vector_excludes_weak_analysis_dislikes(
     )
     await db_session.flush()
 
-    taste = await build_taste_vector(db_session, min_labels_per_class=1)
+    taste = await build_taste_vector(db_session, chat_id=123456, min_labels_per_class=1)
 
     assert taste is not None
     assert taste.n_like == 1
@@ -1397,6 +1606,10 @@ async def test_feedback_callbacks_use_english_ui_language(
     settings = delivery_client.get_settings()
     monkeypatch.setattr(settings, "telegram_chat_id", 123456)
     monkeypatch.setattr(settings, "ui_language", "en")
+    user = await db_session.scalar(select(User).where(User.chat_id == 123456))
+    assert user is not None
+    user.ui_language = "en"
+    await db_session.flush()
 
     for callback_id, callback_data in (
         ("cb-like", build_feedback_callback("like", liked.id)),

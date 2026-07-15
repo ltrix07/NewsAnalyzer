@@ -86,7 +86,26 @@ async def test_stage_run_writes_one_decision_row(db_session: AsyncSession) -> No
     assert stored.run_id == ctx.run_id
     assert stored.target_type == "article"
     assert stored.target_id == 123
+    assert stored.profile_name is None
     assert stored.decision_json == {"action": "processed", "item": "hello"}
+
+
+@pytest.mark.asyncio
+async def test_stage_run_persists_context_profile_name(db_session: AsyncSession) -> None:
+    ctx = Context(
+        run_id=uuid4(),
+        session=db_session,
+        settings=get_settings(),
+        profile_name="alice",
+    )
+
+    await DummyStage().run("hello", ctx)
+    stored = await db_session.scalar(
+        select(Decision).where(Decision.stage_name == "dummy", Decision.run_id == ctx.run_id)
+    )
+
+    assert stored is not None
+    assert stored.profile_name == "alice"
 
 
 @pytest.mark.asyncio

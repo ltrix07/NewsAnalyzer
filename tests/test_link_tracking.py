@@ -29,7 +29,13 @@ app = web_app.app
 @pytest_asyncio.fixture(autouse=True)
 async def _seed_profile_user(db_session: AsyncSession) -> None:
     profile = load_profile("volodymyr", Path("config/profiles"))
-    db_session.add(User(username="volodymyr", profile=profile.model_dump(mode="json")))
+    db_session.add(
+        User(
+            username="volodymyr",
+            chat_id=123456,
+            profile=profile.model_dump(mode="json"),
+        )
+    )
     await db_session.flush()
 
 

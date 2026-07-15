@@ -243,6 +243,7 @@ async def _run_post_commit_work(
             chat_id=result.reveal.chat_id,
             client=telegram_client,
             settings=settings,
+            ui_language=result.reveal.ui_language,
         )
 
     for chat_id, text in result.messages:
@@ -260,6 +261,7 @@ async def _run_post_commit_work(
                 chat_id=result.discussion.chat_id,
                 digest_id=result.discussion.digest_id,
                 question=result.discussion.question,
+                ui_language=result.discussion.ui_language,
             )
 
         # The pending row and cursor are already committed, so replay exits before
@@ -270,7 +272,7 @@ async def _run_post_commit_work(
             reply_markup=(
                 build_research_keyboard(
                     result.discussion.digest_id,
-                    lang=settings.ui_language,
+                    lang=result.discussion.ui_language,
                 )
                 if answer.offer_research
                 else None
@@ -290,6 +292,7 @@ async def _run_post_commit_work(
                 chat_id=result.research.chat_id,
                 digest_id=result.research.digest_id,
                 question=result.research.question,
+                ui_language=result.research.ui_language,
             )
         for chunk in chunks:
             try:

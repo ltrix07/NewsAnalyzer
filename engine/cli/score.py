@@ -42,7 +42,9 @@ async def score_command(
     started_at = perf_counter()
 
     async with session_scope() as session:
-        resolved_profile = await resolve_profile(profile or settings.profile_name, session)
+        username = profile or settings.profile_name
+        resolved_profile = await resolve_profile(username, session)
+        profile_name = username
         stage = RelevanceStage(
             make_llm_client(settings),
             resolved_profile,
@@ -53,6 +55,7 @@ async def score_command(
                 DecisionModel.stage_name == "keyword_filter",
                 DecisionModel.target_type == "event",
                 DecisionModel.target_id == EventModel.id,
+                DecisionModel.profile_name == profile_name,
                 DecisionModel.decision_json["action"].astext == "passed_keyword_filter",
             )
         )
@@ -61,6 +64,7 @@ async def score_command(
                 DecisionModel.stage_name == "relevance",
                 DecisionModel.target_type == "event",
                 DecisionModel.target_id == EventModel.id,
+                DecisionModel.profile_name == profile_name,
             )
         )
         stmt = (
@@ -70,7 +74,12 @@ async def score_command(
             stmt = stmt.limit(limit)
 
         events = [EventDTO.model_validate(event) for event in (await session.scalars(stmt)).all()]
-        ctx = Context(run_id=resolved_run_id, session=session, settings=settings)
+        ctx = Context(
+            run_id=resolved_run_id,
+            session=session,
+            settings=settings,
+            profile_name=profile_name,
+        )
 
         for event in events:
             result = await stage.run(event, ctx)

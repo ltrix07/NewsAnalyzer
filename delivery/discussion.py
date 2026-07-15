@@ -43,13 +43,14 @@ async def answer_digest_question(
     chat_id: int,
     digest_id: int,
     question: str,
+    ui_language: str | None = None,
 ) -> DiscussionAnswer:
     """Answer one user question from the digest and cited event excerpts only."""
 
     digest_model = await session.scalar(select(Digest).where(Digest.id == digest_id))
     if digest_model is None:
         return DiscussionAnswer(
-            text=t("discussion_digest_not_found", settings.ui_language),
+            text=t("discussion_digest_not_found", ui_language or settings.ui_language),
             offer_research=False,
         )
 

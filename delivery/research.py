@@ -49,15 +49,16 @@ async def research_digest_question(
     chat_id: int,
     digest_id: int,
     question: str,
+    ui_language: str | None = None,
 ) -> list[str]:
     """Answer one question with Tavily results and return Telegram chunks."""
 
     if await _daily_research_count(session) >= settings.research_daily_cap:
-        return [t("research_daily_cap", settings.ui_language)]
+        return [t("research_daily_cap", ui_language or settings.ui_language)]
 
     digest_model = await session.scalar(select(Digest).where(Digest.id == digest_id))
     if digest_model is None:
-        return [t("research_digest_not_found", settings.ui_language)]
+        return [t("research_digest_not_found", ui_language or settings.ui_language)]
 
     digest = DigestDTO.model_validate(digest_model)
     profile = load_profile(digest.profile_name, settings.profile_root)
@@ -109,7 +110,11 @@ async def research_digest_question(
     await session.flush()
 
     return split_telegram_message(
-        _format_research_answer(response.output.answer, results, lang=settings.ui_language)
+        _format_research_answer(
+            response.output.answer,
+            results,
+            lang=ui_language or settings.ui_language,
+        )
     )
 
 

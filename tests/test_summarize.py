@@ -182,6 +182,7 @@ async def _seed_verified_event(
             stage_version="v1",
             target_type="event",
             target_id=event.id,
+            profile_name="volodymyr",
             model="gpt-4o-mini",
             input_tokens=12,
             output_tokens=5,
@@ -196,6 +197,7 @@ async def _seed_verified_event(
             stage_version="v1",
             target_type="event",
             target_id=event.id,
+            profile_name="volodymyr",
             model="gpt-4o",
             input_tokens=40,
             output_tokens=20,
@@ -208,7 +210,12 @@ async def _seed_verified_event(
 
 
 def _context(session: AsyncSession) -> Context:
-    return Context(run_id=uuid4(), session=session, settings=get_settings())
+    return Context(
+        run_id=uuid4(),
+        session=session,
+        settings=get_settings(),
+        profile_name="volodymyr",
+    )
 
 
 @pytest.mark.asyncio
@@ -256,7 +263,10 @@ async def test_summarize_cli_reconstructs_verified_event_and_skips_on_rerun(
     monkeypatch.setattr(summarize_cli, "make_llm_client", lambda settings: fake_llm_client)
     monkeypatch.setattr(summarize_cli, "session_scope", fake_session_scope)
 
-    candidates = await summarize_cli.load_summarize_candidates(db_session)
+    candidates = await summarize_cli.load_summarize_candidates(
+        db_session,
+        profile_name="volodymyr",
+    )
     assert len(candidates) == 1
     assert candidates[0].event.id == event.id
     assert candidates[0].verdict == verdict
@@ -296,7 +306,10 @@ async def test_summarize_candidates_skip_when_latest_verify_not_verified(
     monkeypatch.setattr(summarize_cli, "make_llm_client", lambda settings: fake_llm_client)
     monkeypatch.setattr(summarize_cli, "session_scope", fake_session_scope)
 
-    candidates = await summarize_cli.load_summarize_candidates(db_session)
+    candidates = await summarize_cli.load_summarize_candidates(
+        db_session,
+        profile_name="volodymyr",
+    )
     await summarize_cli.summarize_command(limit=10, profile=None, model="gpt-4o")
     digest_count = await db_session.scalar(select(func.count()).select_from(Digest))
 
@@ -320,7 +333,10 @@ async def test_summarize_candidates_skip_when_latest_relevance_is_irrelevant(
     monkeypatch.setattr(summarize_cli, "make_llm_client", lambda settings: fake_llm_client)
     monkeypatch.setattr(summarize_cli, "session_scope", fake_session_scope)
 
-    candidates = await summarize_cli.load_summarize_candidates(db_session)
+    candidates = await summarize_cli.load_summarize_candidates(
+        db_session,
+        profile_name="volodymyr",
+    )
     await summarize_cli.summarize_command(limit=10, profile=None, model="gpt-4o")
     digest_count = await db_session.scalar(select(func.count()).select_from(Digest))
 

@@ -32,6 +32,11 @@ def _patch_stage_commands(
     monkeypatch.setattr(pipeline, "verify_command", stage_impls["verify"])
     monkeypatch.setattr(pipeline, "summarize_command", stage_impls["summarize"])
 
+    async def one_enabled_profile() -> list[str]:
+        return ["volodymyr"]
+
+    monkeypatch.setattr(pipeline, "_load_enabled_profile_names", one_enabled_profile)
+
 
 @pytest.mark.asyncio
 async def test_run_once_calls_all_stages_in_order_with_shared_run_id(
@@ -64,6 +69,121 @@ async def test_run_once_calls_all_stages_in_order_with_shared_run_id(
     assert summary.run_id == _fixed_run_id()
     assert [stage_name for stage_name, _ in recorded_calls] == list(pipeline.STAGE_ORDER)
     assert {run_id for _, run_id in recorded_calls} == {_fixed_run_id()}
+
+
+@pytest.mark.asyncio
+async def test_run_once_explicit_profile_runs_one_tail_without_loading_users(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded_calls: list[tuple[str, str | None]] = []
+
+    def make_stage(stage_name: str) -> Callable[..., Awaitable[None]]:
+        async def stage(**kwargs: object) -> None:
+            profile = kwargs.get("profile")
+            assert profile is None or isinstance(profile, str)
+            recorded_calls.append((stage_name, profile))
+
+        return stage
+
+    _patch_stage_commands(
+        monkeypatch,
+        {stage_name: make_stage(stage_name) for stage_name in pipeline.STAGE_ORDER},
+    )
+
+    async def must_not_load_users() -> list[str]:
+        raise AssertionError("explicit profile must not load enabled users")
+
+    async def empty_decisions(run_id: UUID) -> list[Decision]:
+        del run_id
+        return []
+
+    monkeypatch.setattr(pipeline, "_load_enabled_profile_names", must_not_load_users)
+    monkeypatch.setattr(pipeline, "_load_decisions_by_run_id", empty_decisions)
+
+    await pipeline.run_once(profile_name="alice")
+
+    tail_profiles = [
+        profile for stage, profile in recorded_calls if stage in pipeline.PER_USER_STAGE_ORDER
+    ]
+    assert tail_profiles == [
+        "alice",
+        "alice",
+        "alice",
+        "alice",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_once_zero_enabled_users_skips_per_user_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded_stages: list[str] = []
+
+    def make_stage(stage_name: str) -> Callable[..., Awaitable[None]]:
+        async def stage(**kwargs: object) -> None:
+            del kwargs
+            recorded_stages.append(stage_name)
+
+        return stage
+
+    _patch_stage_commands(
+        monkeypatch,
+        {stage_name: make_stage(stage_name) for stage_name in pipeline.STAGE_ORDER},
+    )
+
+    async def no_enabled_profiles() -> list[str]:
+        return []
+
+    async def empty_decisions(run_id: UUID) -> list[Decision]:
+        del run_id
+        return []
+
+    monkeypatch.setattr(pipeline, "_load_enabled_profile_names", no_enabled_profiles)
+    monkeypatch.setattr(pipeline, "_load_decisions_by_run_id", empty_decisions)
+
+    summary = await pipeline.run_once()
+
+    assert recorded_stages == list(pipeline.SHARED_STAGE_ORDER)
+    assert all(summary.stages[stage].status == "skipped" for stage in pipeline.PER_USER_STAGE_ORDER)
+
+
+@pytest.mark.asyncio
+async def test_run_once_runs_tail_for_each_enabled_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tail_calls: list[tuple[str, str]] = []
+
+    def make_stage(stage_name: str) -> Callable[..., Awaitable[None]]:
+        async def stage(**kwargs: object) -> None:
+            profile = kwargs.get("profile")
+            if stage_name in pipeline.PER_USER_STAGE_ORDER:
+                assert isinstance(profile, str)
+                tail_calls.append((stage_name, profile))
+
+        return stage
+
+    _patch_stage_commands(
+        monkeypatch,
+        {stage_name: make_stage(stage_name) for stage_name in pipeline.STAGE_ORDER},
+    )
+
+    async def two_enabled_profiles() -> list[str]:
+        return ["alice", "bob"]
+
+    async def empty_decisions(run_id: UUID) -> list[Decision]:
+        del run_id
+        return []
+
+    monkeypatch.setattr(pipeline, "_load_enabled_profile_names", two_enabled_profiles)
+    monkeypatch.setattr(pipeline, "_load_decisions_by_run_id", empty_decisions)
+
+    await pipeline.run_once()
+
+    assert tail_calls == [
+        (stage_name, username)
+        for username in ("alice", "bob")
+        for stage_name in pipeline.PER_USER_STAGE_ORDER
+    ]
 
 
 @pytest.mark.asyncio

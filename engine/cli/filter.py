@@ -36,7 +36,9 @@ async def filter_command(
     started_at = perf_counter()
 
     async with session_scope() as session:
-        resolved_profile = await resolve_profile(profile or settings.profile_name, session)
+        username = profile or settings.profile_name
+        resolved_profile = await resolve_profile(username, session)
+        profile_name = username
         stage = KeywordFilterStage(resolved_profile.keyword_rules)
         stmt = (
             select(EventModel)
@@ -46,6 +48,7 @@ async def filter_command(
                         DecisionModel.stage_name == "keyword_filter",
                         DecisionModel.target_type == "event",
                         DecisionModel.target_id == EventModel.id,
+                        DecisionModel.profile_name == profile_name,
                     )
                 )
             )
@@ -55,7 +58,12 @@ async def filter_command(
             stmt = stmt.limit(limit)
 
         events = [EventDTO.model_validate(event) for event in (await session.scalars(stmt)).all()]
-        ctx = Context(run_id=resolved_run_id, session=session, settings=settings)
+        ctx = Context(
+            run_id=resolved_run_id,
+            session=session,
+            settings=settings,
+            profile_name=profile_name,
+        )
 
         for event in events:
             result = await stage.run(event, ctx)

@@ -71,7 +71,7 @@ class SummarizeStage(Stage[VerifiedEventDTO, DigestDTO]):
         payload = response.output
         digest_row = DigestModel(
             event_id=item.event.id,
-            profile_name=self.profile.name,
+            profile_name=ctx.profile_name,
             headline=_strip_nul(payload.headline),
             summary=_strip_nul(payload.summary),
             why_it_matters=_strip_nul(payload.why_it_matters),

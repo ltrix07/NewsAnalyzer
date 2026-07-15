@@ -410,6 +410,13 @@ class Decision(Base):
     __table_args__ = (
         Index("ix_decisions_run_id_stage_name", "run_id", "stage_name"),
         Index("ix_decisions_target_type_target_id", "target_type", "target_id"),
+        Index(
+            "ix_decisions_stage_target_profile",
+            "stage_name",
+            "target_type",
+            "target_id",
+            "profile_name",
+        ),
         Index("ix_decisions_created_at_desc", text("created_at DESC")),
     )
 
@@ -419,6 +426,7 @@ class Decision(Base):
     stage_version: Mapped[str] = mapped_column(String, nullable=False)
     target_type: Mapped[str] = mapped_column(String, nullable=False)
     target_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    profile_name: Mapped[str | None] = mapped_column(String, nullable=True)
     model: Mapped[str | None] = mapped_column(String, nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(nullable=True)

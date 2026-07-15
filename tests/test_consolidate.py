@@ -274,3 +274,28 @@ async def test_filter_candidates_only_include_canonical_after_consolidate(
 
     assert filter_candidate_ids == [first.id]
     assert await db_session.get(Event, second.id) is None
+
+
+@pytest.mark.asyncio
+async def test_consolidate_candidates_remain_global_across_profiles(
+    db_session: AsyncSession,
+) -> None:
+    source = await _create_source(db_session)
+    filtered = await _create_event(db_session, source, suffix="profiled", vector=_vector(10))
+    untouched = await _create_event(db_session, source, suffix="untouched", vector=_vector(11))
+    db_session.add(
+        Decision(
+            run_id=uuid4(),
+            stage_name="keyword_filter",
+            stage_version="v1",
+            target_type="event",
+            target_id=filtered.id,
+            profile_name="alice",
+            decision_json={"action": "passed_keyword_filter"},
+        )
+    )
+    await db_session.flush()
+
+    candidates = await consolidate_cli._load_candidates(db_session, window_hours=24)
+
+    assert [event.id for event in candidates] == [untouched.id]
