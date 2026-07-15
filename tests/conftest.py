@@ -33,6 +33,7 @@ from engine.models import (
     Source,
     TelegramCursor,
     UIEvent,
+    User,
 )
 
 
@@ -72,6 +73,7 @@ async def db_session() -> AsyncIterator[AsyncSession]:
                         Article,
                         Event,
                         Source,
+                        User,
                         Decision,
                     ):
                         await session.execute(delete(model))

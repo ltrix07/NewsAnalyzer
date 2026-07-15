@@ -15,9 +15,9 @@ from engine.db import session_scope
 from engine.domain import Event as EventDTO
 from engine.models import Decision as DecisionModel
 from engine.models import Event as EventModel
-from engine.profile import load_profile
 from engine.stages.base import Context
 from engine.stages.filter_rules import KeywordFilterStage
+from engine.users import resolve_profile
 
 LIMIT_OPTION = typer.Option(default=None, min=1, help="Process at most this many events.")
 PROFILE_OPTION = typer.Option(default=None, help="Override the configured profile name.")
@@ -31,13 +31,13 @@ async def filter_command(
     """Run the cheap keyword filter over events that have not yet been filtered."""
 
     settings = get_settings()
-    resolved_profile = load_profile(profile or settings.profile_name, settings.profile_root)
-    stage = KeywordFilterStage(resolved_profile.keyword_rules)
     resolved_run_id = run_id or uuid4()
     action_counts: Counter[str] = Counter()
     started_at = perf_counter()
 
     async with session_scope() as session:
+        resolved_profile = await resolve_profile(profile or settings.profile_name, session)
+        stage = KeywordFilterStage(resolved_profile.keyword_rules)
         stmt = (
             select(EventModel)
             .where(

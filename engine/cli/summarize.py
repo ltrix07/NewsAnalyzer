@@ -23,9 +23,9 @@ from engine.llm.client import make_llm_client
 from engine.llm.schemas import RelevanceVerdict, VerificationReport
 from engine.models import Decision as DecisionModel
 from engine.models import Event as EventModel
-from engine.profile import load_profile
 from engine.stages.base import Context
 from engine.stages.summarize import SummarizeStage
+from engine.users import resolve_profile
 
 logger = structlog.get_logger(__name__)
 
@@ -140,12 +140,6 @@ async def summarize_command(
     """Summarize verified events into persisted digest rows."""
 
     settings = get_settings()
-    resolved_profile = load_profile(profile or settings.profile_name, settings.profile_root)
-    stage = SummarizeStage(
-        make_llm_client(settings),
-        resolved_profile,
-        model or settings.openai_model_summarize,
-    )
     resolved_run_id = run_id or uuid4()
     action_counts: Counter[str] = Counter()
     total_tokens = 0
@@ -153,6 +147,12 @@ async def summarize_command(
     started_at = perf_counter()
 
     async with session_scope() as session:
+        resolved_profile = await resolve_profile(profile or settings.profile_name, session)
+        stage = SummarizeStage(
+            make_llm_client(settings),
+            resolved_profile,
+            model or settings.openai_model_summarize,
+        )
         candidates = await load_summarize_candidates(session, limit=limit)
         ctx = Context(run_id=resolved_run_id, session=session, settings=settings)
 

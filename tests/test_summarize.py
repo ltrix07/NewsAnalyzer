@@ -6,9 +6,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,10 +20,17 @@ from engine.domain import Event as EventDTO
 from engine.domain import VerifiedEvent as VerifiedEventDTO
 from engine.llm.client import LLMResponse, LLMUsage
 from engine.llm.schemas import Citation, DigestPayload, RelevanceVerdict, VerificationReport
-from engine.models import Article, Decision, Digest, Event, EventMember, Source
-from engine.profile import Profile
+from engine.models import Article, Decision, Digest, Event, EventMember, Source, User
+from engine.profile import Profile, load_profile
 from engine.stages.base import Context
 from engine.stages.summarize import SummarizeStage
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _seed_profile_user(db_session: AsyncSession) -> None:
+    profile = load_profile("volodymyr", Path("config/profiles"))
+    db_session.add(User(username="volodymyr", profile=profile.model_dump(mode="json")))
+    await db_session.flush()
 
 
 class FakeLLMClient:

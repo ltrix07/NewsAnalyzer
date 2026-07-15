@@ -21,6 +21,7 @@ from engine.cli.run import run_command_sync_wrapper
 from engine.cli.score import score_command_sync_wrapper
 from engine.cli.sources import app as sources_app
 from engine.cli.summarize import summarize_command_sync_wrapper
+from engine.cli.users import app as users_app
 from engine.cli.verify import verify_command_sync_wrapper
 from engine.config import get_settings
 from engine.observability import configure_logging
@@ -66,6 +67,7 @@ app.add_typer(sources_app, name="sources")
 app.add_typer(events_app, name="events")
 app.add_typer(digests_app, name="digests")
 app.add_typer(inspect_app, name="inspect")
+app.add_typer(users_app, name="users")
 app.command("cost")(cost_command_sync_wrapper)
 app.command("fetch")(fetch_command_sync_wrapper)
 app.command("ingest")(ingest_command_sync_wrapper)

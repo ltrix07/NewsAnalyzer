@@ -275,7 +275,7 @@ async def reveal_digest(
         except Exception:
             logger.warning("link_minting_failed", digest_id=digest_model.id)
 
-    message = format_digest(digest, link_urls)
+    message = await format_digest(digest, session, link_urls)
     reply_markup = build_digest_keyboard(digest_model.id, lang=settings.ui_language)
     if parent is not None:
         header = (

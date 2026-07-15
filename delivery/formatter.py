@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import html
 import re
-from pathlib import Path
 
-from engine.config import get_settings
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from engine.domain import Digest
-from engine.profile import load_profile
+from engine.users import resolve_profile
 
 MAX_TELEGRAM_MESSAGE_LENGTH = 4096
 
@@ -30,13 +30,8 @@ def _escape_attr(value: str) -> str:
     return html.escape(value, quote=True)
 
 
-def _profile_root() -> Path:
-    settings = get_settings()
-    return settings.profile_root if settings.profile_root.exists() else Path("config/profiles")
-
-
-def _load_labels(profile_name: str) -> dict[str, str]:
-    profile = load_profile(profile_name, _profile_root())
+async def _load_labels(profile_name: str, session: AsyncSession) -> dict[str, str]:
+    profile = await resolve_profile(profile_name, session)
     return _LABELS.get(profile.output_language.lower(), _LABELS["en"])
 
 
@@ -162,10 +157,14 @@ def _build_message(
     return "\n\n".join(sections)
 
 
-def format_digest(digest: Digest, link_urls: dict[int, str] | None = None) -> str:
+async def format_digest(
+    digest: Digest,
+    session: AsyncSession,
+    link_urls: dict[int, str] | None = None,
+) -> str:
     """Render one digest into Telegram-compatible HTML under the 4096-char limit."""
 
-    labels = _load_labels(digest.profile_name)
+    labels = await _load_labels(digest.profile_name, session)
     confidence_prefix = _CONFIDENCE_PREFIXES[digest.confidence_level]
     headline = _escape_text(digest.headline)
     summary = _escape_text(digest.summary)

@@ -68,6 +68,32 @@ class Source(Base):
     articles: Mapped[list[Article]] = relationship(back_populates="source")
 
 
+class User(Base):
+    """Operator-managed user profile and Telegram identity."""
+
+    __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("username", name="uq_users_username"),
+        UniqueConstraint("chat_id", name="uq_users_chat_id"),
+        CheckConstraint("username ~ '^[a-z0-9_]+$'", name="ck_users_username_slug"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String, nullable=False)
+    chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    profile: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    ui_language: Mapped[str] = mapped_column(
+        String, nullable=False, default="ru", server_default=text("'ru'")
+    )
+    enabled: Mapped[bool] = mapped_column(nullable=False, default=True, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
 class Article(Base):
     """Persisted normalized article content from a single source."""
 

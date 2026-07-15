@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,15 +58,17 @@ from engine.models import (
     Impression,
     ResearchPending,
     UIEvent,
+    User,
 )
+from engine.profile import load_profile
 from engine.ranking.taste import build_taste_vector
 from engine.search import tavily as tavily_module
 from engine.search.tavily import SearchResult, TavilyClient
 from engine.stages._event_context import EventArticle
 
 
-@pytest.fixture(autouse=True)
-def _use_listener_test_session(
+@pytest_asyncio.fixture(autouse=True)
+async def _use_listener_test_session(
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -76,6 +79,9 @@ def _use_listener_test_session(
         yield db_session
 
     monkeypatch.setattr(listener_handlers, "session_scope", fake_session_scope)
+    profile = load_profile("volodymyr", Path("config/profiles"))
+    db_session.add(User(username="volodymyr", profile=profile.model_dump(mode="json")))
+    await db_session.flush()
 
 
 def _make_digest(
@@ -170,7 +176,8 @@ async def _create_digest_row(
     return digest
 
 
-def test_format_digest_escapes_html_special_chars() -> None:
+@pytest.mark.asyncio
+async def test_format_digest_escapes_html_special_chars(db_session: AsyncSession) -> None:
     digest = _make_digest(
         headline="Headline <unsafe> & value",
         summary="Summary with <b>tag</b> & ampersand.",
@@ -185,7 +192,7 @@ def test_format_digest_escapes_html_special_chars() -> None:
         ],
     )
 
-    message = format_digest(digest)
+    message = await format_digest(digest, db_session)
 
     assert "&lt;unsafe&gt;" in message
     assert "&amp; value" in message
@@ -194,35 +201,18 @@ def test_format_digest_escapes_html_special_chars() -> None:
     assert "src &amp; co: Title &lt;unsafe&gt;" in message
 
 
-def test_format_digest_localizes_labels_by_profile(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    profile_root = tmp_path / "profiles"
-    profile_root.mkdir()
-    (profile_root / "english.yaml").write_text(
-        "\n".join(
-            [
-                "profile:",
-                "  name: english",
-                '  location: "US"',
-                "  citizenship: US",
-                "  languages: [en]",
-                "  output_language: en",
-                "  interests: [Macro]",
-                "  not_interested: [Sports]",
-                "  keyword_rules:",
-                "    keep_if_matches: []",
-                "    drop_if_matches: []",
-            ]
-        ),
-        encoding="utf-8",
+@pytest.mark.asyncio
+async def test_format_digest_localizes_labels_by_profile(db_session: AsyncSession) -> None:
+    russian = load_profile("volodymyr", Path("config/profiles"))
+    english = russian.model_copy(update={"name": "english", "output_language": "en"})
+    db_session.add_all(
+        [
+            User(username="english", profile=english.model_dump(mode="json")),
+        ]
     )
-
-    settings = delivery_client.get_settings()
-    russian_message = format_digest(_make_digest(profile_name="volodymyr"))
-    monkeypatch.setattr(settings, "profile_root", profile_root)
-    english_message = format_digest(_make_digest(profile_name="english"))
+    await db_session.flush()
+    russian_message = await format_digest(_make_digest(profile_name="volodymyr"), db_session)
+    english_message = await format_digest(_make_digest(profile_name="english"), db_session)
 
     assert "Почему это важно:" in russian_message
     assert "Источники:" in russian_message
@@ -230,7 +220,10 @@ def test_format_digest_localizes_labels_by_profile(
     assert "Sources:" in english_message
 
 
-def test_format_digest_truncates_summary_before_why_and_keeps_citations() -> None:
+@pytest.mark.asyncio
+async def test_format_digest_truncates_summary_before_why_and_keeps_citations(
+    db_session: AsyncSession,
+) -> None:
     digest = _make_digest(
         summary=" ".join(["Sentence."] * 1200),
         why_it_matters="Why section stays present.",
@@ -240,7 +233,7 @@ def test_format_digest_truncates_summary_before_why_and_keeps_citations() -> Non
         ],
     )
 
-    message = format_digest(digest)
+    message = await format_digest(digest, db_session)
 
     assert len(message) <= MAX_TELEGRAM_MESSAGE_LENGTH
     assert "Why section stays present." in message

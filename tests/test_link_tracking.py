@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 import pytest
+import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,10 +19,18 @@ from engine.config import Settings
 from engine.domain import Digest
 from engine.llm.schemas import Citation
 from engine.models import Digest as DigestModel
-from engine.models import DigestLink, Event, LinkClick
+from engine.models import DigestLink, Event, LinkClick, User
+from engine.profile import load_profile
 from web import app as web_app
 
 app = web_app.app
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _seed_profile_user(db_session: AsyncSession) -> None:
+    profile = load_profile("volodymyr", Path("config/profiles"))
+    db_session.add(User(username="volodymyr", profile=profile.model_dump(mode="json")))
+    await db_session.flush()
 
 
 def _digest() -> Digest:
@@ -43,8 +53,11 @@ def _digest() -> Digest:
     )
 
 
-def test_format_digest_uses_tracked_urls_with_raw_fallback() -> None:
-    message = format_digest(_digest(), {0: "https://links.example/r/token"})
+@pytest.mark.asyncio
+async def test_format_digest_uses_tracked_urls_with_raw_fallback(
+    db_session: AsyncSession,
+) -> None:
+    message = await format_digest(_digest(), db_session, {0: "https://links.example/r/token"})
 
     assert 'href="https://links.example/r/token"' in message
     assert 'href="https://example.com/two"' in message

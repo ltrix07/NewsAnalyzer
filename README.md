@@ -6,6 +6,12 @@ Personal news aggregator with a verification cascade.
 
 See [AGENTS.md](AGENTS.md).
 
+## User profile seed
+
+After applying migrations, import or refresh the configured single-user profile with
+`uv run python -m engine users seed-self`. The command reads `PROFILE_NAME` (default
+`volodymyr`), its YAML profile, `TELEGRAM_CHAT_ID`, and `UI_LANGUAGE`; it is safe to run again.
+
 ## Tracked-link redirect service
 
 Run `uv run python -m web` to listen on `127.0.0.1:8080`; `--host` and `--port` override the
