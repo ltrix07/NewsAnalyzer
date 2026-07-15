@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import engine._retry as retry_module
 from delivery import client as delivery_client
 from delivery.discussion import DiscussionAnswer, render_discussion_prompt
-from delivery.dispatcher import deliver_pending
+from delivery.dispatcher import deliver_pending, reveal_batch_page
 from delivery.formatter import MAX_TELEGRAM_MESSAGE_LENGTH, format_digest
 from delivery.keyboards import (
     build_digest_keyboard,
@@ -28,6 +28,8 @@ from delivery.keyboards import (
     build_feedback_callback,
     build_research_callback,
     build_research_keyboard,
+    build_reveal_callback,
+    build_reveal_more_callback,
     parse_callback_data,
 )
 from delivery.listener import handlers as listener_handlers
@@ -47,6 +49,7 @@ from engine.llm.client import LLMResponse, LLMUsage
 from engine.llm.schemas import Citation, DiscussionReply, ResearchReply
 from engine.models import (
     Decision,
+    DeliveryBatch,
     Digest,
     DigestFeedback,
     DiscussionPending,
@@ -514,6 +517,94 @@ class _RecordingTelegramClient:
         self._next_message_id += 1
         self.calls.append({"chat_id": chat_id, "text": text, **kwargs})
         return {"ok": True, "result": {"message_id": self._next_message_id}}
+
+    async def edit_message_text(
+        self, chat_id: int, message_id: int, text: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        self.calls.append(
+            {"chat_id": chat_id, "message_id": message_id, "text": text, "edited": True, **kwargs}
+        )
+        return {"ok": True, "result": {"message_id": message_id}}
+
+
+@pytest.mark.asyncio
+async def test_batched_delivery_notifies_without_revealing(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event_a = await _create_event(db_session)
+    event_b = await _create_event(db_session)
+    first = await _create_digest_row(db_session, event_id=event_a.id, headline="First")
+    second = await _create_digest_row(db_session, event_id=event_b.id, headline="Second")
+    client = _RecordingTelegramClient()
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    async def unrelated(*_: Any) -> PairJudgement:
+        return _thread_judgement(False)
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "telegram_chat_id", 123456)
+    monkeypatch.setattr(settings, "batched_delivery_enabled", True)
+    monkeypatch.setattr(settings, "thread_updates_enabled", False)
+    monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
+
+    report = await deliver_pending(client=client, adjudicator=unrelated)
+
+    batch = await db_session.scalar(select(DeliveryBatch))
+    assert report.sent == 0
+    assert batch is not None
+    assert first.batch_id == second.batch_id == batch.id
+    assert first.delivered_at is None and second.delivered_at is None
+    assert len(client.calls) == 1
+    assert "2" in client.calls[0]["text"]
+    assert client.calls[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == (
+        build_reveal_callback(batch.id)
+    )
+    assert await db_session.scalar(select(func.count()).select_from(Impression)) == 0
+
+
+@pytest.mark.asyncio
+async def test_reveal_page_records_impressions_and_closes_batch(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch = DeliveryBatch(chat_id=123456, notification_message_id=77, notified_at=datetime.now(UTC))
+    db_session.add(batch)
+    await db_session.flush()
+    for headline in ("One", "Two"):
+        event = await _create_event(db_session)
+        digest = await _create_digest_row(db_session, event_id=event.id, headline=headline)
+        digest.batch_id = batch.id
+    client = _RecordingTelegramClient()
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "batch_reveal_page_size", 5)
+    monkeypatch.setattr(settings, "link_tracking_enabled", False)
+    monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
+
+    await reveal_batch_page(batch_id=batch.id, chat_id=123456, client=client, settings=settings)
+
+    assert await db_session.scalar(select(func.count()).select_from(Impression)) == 2
+    assert batch.closed_at is not None
+    assert len([call for call in client.calls if not call.get("edited")]) == 2
+    assert client.calls[-1]["edited"] is True
+    assert client.calls[-1]["text"] == t("batch_all_shown", settings.ui_language)
+
+
+def test_reveal_callback_data_is_typed() -> None:
+    reveal = parse_callback_data(build_reveal_callback(42))
+    more = parse_callback_data(build_reveal_more_callback(42))
+
+    assert reveal is not None and reveal.action == "reveal" and reveal.batch_id == 42
+    assert more is not None and more.action == "reveal_more" and more.batch_id == 42
+    assert reveal.digest_id is None and more.digest_id is None
 
 
 def _thread_judgement(same_event: bool) -> PairJudgement:

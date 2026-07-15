@@ -9,20 +9,24 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from delivery.client import TelegramBotClient
 from delivery.formatter import format_digest
-from delivery.keyboards import build_digest_keyboard
+from delivery.keyboards import (
+    build_digest_keyboard,
+    build_reveal_keyboard,
+    build_reveal_more_keyboard,
+)
 from delivery.strings import t
 from engine.config import Settings, get_settings
 from engine.consolidation_match import Adjudicator, default_adjudicator
 from engine.db import session_scope
 from engine.domain import Digest as DigestDTO
+from engine.models import DeliveryBatch, DigestLink, Impression
 from engine.models import Digest as DigestModel
-from engine.models import DigestLink, Impression
 from engine.models import Event as EventModel
 from engine.ranking.taste import (
     blend_score,
@@ -249,6 +253,191 @@ async def _mint_digest_links(digest: DigestDTO, chat_id: int) -> dict[int, str]:
     return {citation_index: token for citation_index, token in rows}
 
 
+async def reveal_digest(
+    *,
+    session: AsyncSession,
+    client: TelegramBotClient,
+    settings: Settings,
+    chat_id: int,
+    item: RankedDigest,
+    parent: ThreadParent | None = None,
+) -> None:
+    """Send one digest and record the reveal in the caller's transaction."""
+
+    digest_model = item.digest
+    digest = DigestDTO.model_validate(digest_model)
+    link_urls: dict[int, str] | None = None
+    if settings.link_tracking_enabled:
+        base_url = settings.require_redirect_base_url()
+        try:
+            tokens = await _mint_digest_links(digest, chat_id)
+            link_urls = {index: f"{base_url}/r/{token}" for index, token in tokens.items()}
+        except Exception:
+            logger.warning("link_minting_failed", digest_id=digest_model.id)
+
+    message = format_digest(digest, link_urls)
+    reply_markup = build_digest_keyboard(digest_model.id, lang=settings.ui_language)
+    if parent is not None:
+        header = (
+            f"{t('thread_update_header', settings.ui_language)}{html.escape(parent.headline)}\n\n"
+        )
+        try:
+            response = await client.send_message(
+                chat_id,
+                header + message,
+                reply_markup=reply_markup,
+                reply_to_message_id=parent.telegram_message_id,
+                disable_notification=True,
+            )
+        except Exception as exc:
+            if not _is_reply_target_missing(exc):
+                raise
+            logger.warning(
+                "delivery_reply_parent_missing",
+                digest_id=digest_model.id,
+                parent_digest_id=parent.digest_id,
+                parent_message_id=parent.telegram_message_id,
+            )
+            parent = None
+            response = await client.send_message(chat_id, message, reply_markup=reply_markup)
+    else:
+        response = await client.send_message(chat_id, message, reply_markup=reply_markup)
+
+    digest_model.delivered_at = datetime.now(UTC)
+    digest_model.telegram_message_id = _message_id_from_response(response)
+    session.add(
+        Impression(
+            digest_id=digest_model.id,
+            event_id=digest_model.event_id,
+            profile_name=digest_model.profile_name,
+            chat_id=chat_id,
+            context=_impression_context(
+                item.context,
+                threaded_parent_digest_id=parent.digest_id if parent else None,
+            ),
+        )
+    )
+
+
+async def _upsert_batch_notification(
+    client: TelegramBotClient,
+    batch: DeliveryBatch,
+    count: int,
+    settings: Settings,
+) -> None:
+    text = t("batch_notification", settings.ui_language).format(count=count)
+    keyboard = build_reveal_keyboard(batch.id, lang=settings.ui_language)
+    try:
+        if batch.notification_message_id is None:
+            response = await client.send_message(batch.chat_id, text, reply_markup=keyboard)
+            batch.notification_message_id = _message_id_from_response(response)
+            batch.notified_at = datetime.now(UTC)
+        else:
+            await client.edit_message_text(
+                batch.chat_id, batch.notification_message_id, text, reply_markup=keyboard
+            )
+    except Exception:
+        logger.exception("batch_notification_failed", batch_id=batch.id)
+
+
+async def _maybe_nudge_batch(
+    session: AsyncSession,
+    client: TelegramBotClient,
+    batch: DeliveryBatch,
+    settings: Settings,
+) -> None:
+    if batch.opened_at is not None or batch.notified_at is None:
+        return
+    now = datetime.now(UTC)
+    interval = timedelta(days=settings.batch_nudge_after_days)
+    if now - batch.notified_at < interval:
+        return
+    if batch.last_nudge_at is not None and now - batch.last_nudge_at < interval:
+        return
+    count = await session.scalar(
+        select(func.count())
+        .select_from(DigestModel)
+        .where(DigestModel.batch_id == batch.id, DigestModel.delivered_at.is_(None))
+    )
+    try:
+        await client.send_message(
+            batch.chat_id,
+            t("batch_nudge", settings.ui_language).format(count=count or 0),
+        )
+        batch.last_nudge_at = now
+    except Exception:
+        logger.exception("batch_nudge_failed", batch_id=batch.id)
+
+
+async def reveal_batch_page(
+    *,
+    batch_id: int,
+    chat_id: int,
+    client: TelegramBotClient,
+    settings: Settings,
+) -> None:
+    """Reveal one ranked page after the callback transaction has committed."""
+
+    async with session_scope() as session:
+        batch = await session.get(DeliveryBatch, batch_id)
+        if batch is None or batch.chat_id != chat_id or batch.closed_at is not None:
+            return
+        digests = list(
+            (
+                await session.scalars(
+                    select(DigestModel).where(
+                        DigestModel.batch_id == batch_id,
+                        DigestModel.delivered_at.is_(None),
+                    )
+                )
+            ).all()
+        )
+        ranked = await _rank_pending_digests(session, digests, settings)
+        for item in ranked[: settings.batch_reveal_page_size]:
+            try:
+                await reveal_digest(
+                    session=session,
+                    client=client,
+                    settings=settings,
+                    chat_id=chat_id,
+                    item=item,
+                )
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                logger.exception("batch_reveal_failed", batch_id=batch_id, digest_id=item.digest.id)
+
+        remaining = await session.scalar(
+            select(func.count())
+            .select_from(DigestModel)
+            .where(DigestModel.batch_id == batch_id, DigestModel.delivered_at.is_(None))
+        )
+        if remaining:
+            try:
+                await client.send_message(
+                    chat_id,
+                    t("btn_show_more", settings.ui_language).format(count=remaining),
+                    reply_markup=build_reveal_more_keyboard(
+                        batch_id, remaining, lang=settings.ui_language
+                    ),
+                )
+            except Exception:
+                logger.exception("batch_reveal_more_failed", batch_id=batch_id)
+            return
+
+        batch.closed_at = datetime.now(UTC)
+        await session.commit()
+        if batch.notification_message_id is not None:
+            try:
+                await client.edit_message_text(
+                    chat_id,
+                    batch.notification_message_id,
+                    t("batch_all_shown", settings.ui_language),
+                )
+            except Exception:
+                logger.exception("batch_terminal_edit_failed", batch_id=batch_id)
+
+
 async def deliver_pending(
     limit: int | None = None,
     *,
@@ -266,27 +455,22 @@ async def deliver_pending(
     async with session_scope() as session:
         digests = list((await session.scalars(_pending_digests_query(limit))).all())
         ranked = await _rank_pending_digests(session, digests, settings)
+        open_batch: DeliveryBatch | None = None
+        batch_gained = False
+        if settings.batched_delivery_enabled:
+            open_batch = await session.scalar(
+                select(DeliveryBatch).where(
+                    DeliveryBatch.chat_id == chat_id, DeliveryBatch.closed_at.is_(None)
+                )
+            )
+
         for item in ranked:
             digest_model = item.digest
-            digest = DigestDTO.model_validate(digest_model)
+            if settings.batched_delivery_enabled and digest_model.batch_id is not None:
+                continue
             parent: ThreadParent | None = None
             try:
-                link_urls: dict[int, str] | None = None
-                if settings.link_tracking_enabled:
-                    base_url = settings.require_redirect_base_url()
-                    try:
-                        tokens = await _mint_digest_links(digest, chat_id)
-                        link_urls = {
-                            index: f"{base_url}/r/{token}" for index, token in tokens.items()
-                        }
-                    except Exception:
-                        logger.warning("link_minting_failed", digest_id=digest_model.id)
-                        link_urls = None
-                message = format_digest(digest, link_urls)
                 if settings.thread_updates_enabled:
-                    # Threading is best-effort: a failure in parent detection
-                    # (e.g. the LLM adjudicator is down or rate-limited) must
-                    # degrade to a normal top-level send, never block delivery.
                     try:
                         parent = await _find_thread_parent(
                             session,
@@ -295,55 +479,25 @@ async def deliver_pending(
                             resolved_adjudicator,
                         )
                     except Exception:
-                        logger.warning(
-                            "thread_parent_detection_failed",
-                            digest_id=digest_model.id,
-                        )
-                        parent = None
+                        logger.warning("thread_parent_detection_failed", digest_id=digest_model.id)
 
-                if parent is not None:
-                    header = (
-                        f"{t('thread_update_header', settings.ui_language)}"
-                        f"{html.escape(parent.headline)}\n\n"
-                    )
-                    try:
-                        response = await resolved_client.send_message(
-                            chat_id,
-                            header + message,
-                            reply_markup=build_digest_keyboard(
-                                digest_model.id,
-                                lang=settings.ui_language,
-                            ),
-                            reply_to_message_id=parent.telegram_message_id,
-                            disable_notification=True,
-                        )
-                    except Exception as exc:
-                        if not _is_reply_target_missing(exc):
-                            raise
-                        logger.warning(
-                            "delivery_reply_parent_missing",
-                            digest_id=digest_model.id,
-                            parent_digest_id=parent.digest_id,
-                            parent_message_id=parent.telegram_message_id,
-                        )
-                        parent = None
-                        response = await resolved_client.send_message(
-                            chat_id,
-                            message,
-                            reply_markup=build_digest_keyboard(
-                                digest_model.id,
-                                lang=settings.ui_language,
-                            ),
-                        )
-                else:
-                    response = await resolved_client.send_message(
-                        chat_id,
-                        message,
-                        reply_markup=build_digest_keyboard(
-                            digest_model.id,
-                            lang=settings.ui_language,
-                        ),
-                    )
+                if settings.batched_delivery_enabled and parent is None:
+                    if open_batch is None:
+                        open_batch = DeliveryBatch(chat_id=chat_id)
+                        session.add(open_batch)
+                        await session.flush()
+                    digest_model.batch_id = open_batch.id
+                    batch_gained = True
+                    continue
+
+                await reveal_digest(
+                    session=session,
+                    client=resolved_client,
+                    settings=settings,
+                    chat_id=chat_id,
+                    item=item,
+                    parent=parent,
+                )
             except Exception:
                 report.failed += 1
                 logger.exception(
@@ -352,23 +506,22 @@ async def deliver_pending(
                     event_id=digest_model.event_id,
                 )
                 continue
-
-            digest_model.delivered_at = datetime.now(UTC)
-            digest_model.telegram_message_id = _message_id_from_response(response)
-            session.add(
-                Impression(
-                    digest_id=digest_model.id,
-                    event_id=digest_model.event_id,
-                    profile_name=digest_model.profile_name,
-                    chat_id=chat_id,
-                    context=_impression_context(
-                        item.context,
-                        threaded_parent_digest_id=parent.digest_id if parent else None,
-                    ),
-                )
-            )
             await session.commit()
             report.sent += 1
+
+        if settings.batched_delivery_enabled and open_batch is not None:
+            if batch_gained or open_batch.notification_message_id is None:
+                count = await session.scalar(
+                    select(func.count())
+                    .select_from(DigestModel)
+                    .where(
+                        DigestModel.batch_id == open_batch.id,
+                        DigestModel.delivered_at.is_(None),
+                    )
+                )
+                await _upsert_batch_notification(resolved_client, open_batch, count or 0, settings)
+            await _maybe_nudge_batch(session, resolved_client, open_batch, settings)
+            await session.commit()
 
     return report
 

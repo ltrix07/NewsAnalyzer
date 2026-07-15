@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from delivery.client import TelegramBotClient
 from delivery.discussion import answer_digest_question
+from delivery.dispatcher import reveal_batch_page
 from delivery.keyboards import build_research_keyboard
 from delivery.listener.handlers import HandlerResult, handle_update
 from delivery.research import SearchClient, research_digest_question
@@ -236,6 +237,14 @@ async def _run_post_commit_work(
     search_client: SearchClient | None,
     result: HandlerResult,
 ) -> None:
+    if result.reveal is not None:
+        await reveal_batch_page(
+            batch_id=result.reveal.batch_id,
+            chat_id=result.reveal.chat_id,
+            client=telegram_client,
+            settings=settings,
+        )
+
     for chat_id, text in result.messages:
         try:
             await telegram_client.send_message(chat_id, text)

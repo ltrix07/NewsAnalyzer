@@ -200,8 +200,29 @@ class Digest(Base):
     )
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     telegram_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    batch_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("delivery_batches.id"), nullable=True
+    )
 
     event: Mapped[Event] = relationship(back_populates="digests")
+
+
+class DeliveryBatch(Base):
+    """One recipient notification grouping unrevealed top-level digests."""
+
+    __tablename__ = "delivery_batches"
+    __table_args__ = (Index("ix_delivery_batches_chat_closed", "chat_id", "closed_at"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    notification_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_nudge_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class DigestLink(Base):

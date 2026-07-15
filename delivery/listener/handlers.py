@@ -23,7 +23,7 @@ from delivery.strings import t
 from engine.config import Settings
 from engine.db import session_scope
 from engine.llm.client import LLMClient
-from engine.models import DigestFeedback, DiscussionPending, ResearchPending, UIEvent
+from engine.models import DeliveryBatch, DigestFeedback, DiscussionPending, ResearchPending, UIEvent
 
 logger = structlog.get_logger(__name__)
 
@@ -49,11 +49,18 @@ class ResearchRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class RevealRequest:
+    chat_id: int
+    batch_id: int
+
+
+@dataclass(frozen=True, slots=True)
 class HandlerResult:
     """Work that is safe to run only after the handler transaction commits."""
 
     discussion: DiscussionRequest | None = None
     research: ResearchRequest | None = None
+    reveal: RevealRequest | None = None
     messages: list[tuple[int, str]] = field(default_factory=list)
 
 
@@ -150,13 +157,34 @@ async def _handle_callback_query(
         )
         return HandlerResult()
 
-    context = {"reason": payload.reason} if payload.action == "dislike_reason" else None
+    context = (
+        {"reason": payload.reason}
+        if payload.action == "dislike_reason"
+        else ({"batch_id": payload.batch_id} if payload.batch_id is not None else None)
+    )
     await _best_effort_log_ui_event(
         chat_id=chat_id,
         action=payload.action,
         digest_id=payload.digest_id,
         context=context,
     )
+
+    if payload.action in {"reveal", "reveal_more"}:
+        if payload.batch_id is None:
+            return HandlerResult()
+        batch = await session.get(DeliveryBatch, payload.batch_id)
+        if batch is None or batch.chat_id != chat_id or batch.closed_at is not None:
+            return HandlerResult()
+        if batch.opened_at is None:
+            batch.opened_at = datetime.now(UTC)
+            await session.flush()
+        await _best_effort_answer_callback(
+            telegram_client, callback_query_id, t("ack_like", settings.ui_language)
+        )
+        return HandlerResult(reveal=RevealRequest(chat_id=chat_id, batch_id=batch.id))
+
+    if payload.digest_id is None:
+        return HandlerResult()
 
     if payload.action in {"like", "dislike"}:
         feedback: FeedbackAction = "like" if payload.action == "like" else "dislike"

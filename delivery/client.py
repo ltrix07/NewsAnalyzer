@@ -90,6 +90,27 @@ class TelegramBotClient:
             {"chat_id": chat_id, "message_id": message_id, "reply_markup": reply_markup},
         )
 
+    async def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        *,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Replace text and optional keyboard for an existing Telegram message."""
+
+        body: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        if reply_markup is not None:
+            body["reply_markup"] = reply_markup
+        return await self._post("editMessageText", body)
+
     async def _post(
         self,
         method: str,

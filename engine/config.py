@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     thread_min_similarity: float = 0.50
     thread_max_candidates: int = 3
     link_tracking_enabled: bool = False
+    batched_delivery_enabled: bool = False
+    batch_reveal_page_size: int = 5
+    batch_nudge_after_days: int = 3
     redirect_base_url: str | None = None
     openai_model_relevance: str = "gpt-4o-mini"
     openai_model_consolidate: str = "gpt-4o-mini"

@@ -9,13 +9,17 @@ from delivery.strings import t
 
 FeedbackAction = Literal["like", "dislike"]
 DislikeReason = Literal["off_topic", "weak_analysis"]
-KeyboardAction = Literal["like", "dislike", "dislike_reason", "discussion", "research"]
+KeyboardAction = Literal[
+    "like", "dislike", "dislike_reason", "discussion", "research", "reveal", "reveal_more"
+]
 UIEventAction = Literal[
     "like",
     "dislike",
     "dislike_reason",
     "discussion",
     "research",
+    "reveal",
+    "reveal_more",
     "discussion_question",
     "unknown_callback",
 ]
@@ -28,7 +32,8 @@ class CallbackPayload:
     """Parsed callback_data for one digest action."""
 
     action: KeyboardAction
-    digest_id: int
+    digest_id: int | None = None
+    batch_id: int | None = None
     reason: str | None = None
 
 
@@ -49,6 +54,14 @@ def build_research_callback(digest_id: int) -> str:
     """Build compact callback_data for the research button."""
 
     return _validate_callback_data(f"res:{digest_id}")
+
+
+def build_reveal_callback(batch_id: int) -> str:
+    return _validate_callback_data(f"rev:{batch_id}")
+
+
+def build_reveal_more_callback(batch_id: int) -> str:
+    return _validate_callback_data(f"revm:{batch_id}")
 
 
 def build_dislike_reason_callback(reason: DislikeReason, digest_id: int) -> str:
@@ -93,6 +106,15 @@ def parse_callback_data(callback_data: str) -> CallbackPayload | None:
             return None
         return CallbackPayload(action="research", digest_id=digest_id)
 
+    if len(parts) == 2 and parts[0] in {"rev", "revm"}:
+        batch_id = _parse_positive_int(parts[1])
+        if batch_id is None:
+            return None
+        return CallbackPayload(
+            action="reveal" if parts[0] == "rev" else "reveal_more",
+            batch_id=batch_id,
+        )
+
     return None
 
 
@@ -125,6 +147,36 @@ def build_digest_keyboard(
                     "callback_data": build_discussion_callback(digest_id),
                 }
             ],
+        ]
+    }
+
+
+def build_reveal_keyboard(
+    batch_id: int, *, lang: str = "ru"
+) -> dict[str, list[list[dict[str, str]]]]:
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": t("btn_show_digests", lang),
+                    "callback_data": build_reveal_callback(batch_id),
+                }
+            ]
+        ]
+    }
+
+
+def build_reveal_more_keyboard(
+    batch_id: int, count: int, *, lang: str = "ru"
+) -> dict[str, list[list[dict[str, str]]]]:
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": t("btn_show_more", lang).format(count=count),
+                    "callback_data": build_reveal_more_callback(batch_id),
+                }
+            ]
         ]
     }
 

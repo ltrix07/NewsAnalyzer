@@ -52,6 +52,17 @@ UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "🔄 <b>Обновление по теме:</b> ",
         "en": "🔄 <b>Update on:</b> ",
     },
+    "batch_notification": {
+        "ru": "Готово дайджестов: {count}. Нажмите, чтобы посмотреть.",
+        "en": "{count} digests are ready. Tap to view.",
+    },
+    "btn_show_digests": {"ru": "Показать", "en": "Show"},
+    "btn_show_more": {"ru": "Показать ещё {count}", "en": "Show {count} more"},
+    "batch_nudge": {
+        "ru": "У вас {count} непрочитанных дайджестов.",
+        "en": "You have {count} unread digests.",
+    },
+    "batch_all_shown": {"ru": "Все дайджесты показаны.", "en": "All digests shown."},
 }
 
 
