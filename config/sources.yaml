@@ -5,24 +5,40 @@ sources:
     url: https://www.bankier.pl/rss/wiadomosci.xml
     enabled: true
     poll_interval_seconds: 1800
+    lang: pl
+    country: PL
+    topics: [economy_markets, pl_domestic]
+    description: Polish business and finance news covering markets, banking, and the economy.
 
   - name: money_pl_rss
     kind: rss
     url: https://www.money.pl/rss/wiadomosci.xml
     enabled: true
     poll_interval_seconds: 1800
+    lang: pl
+    country: PL
+    topics: [economy_markets, pl_domestic]
+    description: Polish business news covering personal finance, companies, and the economy.
 
   - name: rzeczpospolita_ekonomia
     kind: rss
     url: https://www.rp.pl/rss/3
     enabled: true
     poll_interval_seconds: 3600
+    lang: pl
+    country: PL
+    topics: [economy_markets, pl_domestic]
+    description: Polish economic reporting covering business, markets, and domestic policy.
 
   - name: nbp_rss
     kind: rss
     url: https://www.nbp.pl/rss/news_pl.xml
     enabled: false                      
     poll_interval_seconds: 3600
+    lang: pl
+    country: PL
+    topics: [economy_markets]
+    description: Official Polish central bank news and monetary policy information.
 
   # === Украинские (русскоязычные) ===
   - name: ukrpravda_ru
@@ -30,12 +46,20 @@ sources:
     url: https://www.pravda.com.ua/rus/rss/
     enabled: true
     poll_interval_seconds: 1800
+    lang: ru
+    country: UA
+    topics: [ua_war, ua_domestic]
+    description: Russian-language Ukrainian news covering the war, politics, and society.
 
   - name: nv_ua
     kind: rss
     url: https://nv.ua/rss/all.xml
     enabled: true
     poll_interval_seconds: 1800
+    lang: ru
+    country: UA
+    topics: [ua_war, ua_domestic]
+    description: Ukrainian news outlet covering the war, domestic affairs, business, and society.
 
   # === EU policy и геополитика ===
   - name: politico_eu
@@ -43,8 +67,16 @@ sources:
     url: https://www.politico.eu/feed/
     enabled: true
     poll_interval_seconds: 3600
+    lang: en
+    country: null
+    topics: [eu_policy]
+    description: European political news covering EU institutions, policy, and geopolitics.
 
   - name: euractiv
     kind: rss
     url: https://www.euractiv.com/feed/
     enabled: false
+    lang: en
+    country: null
+    topics: [eu_policy]
+    description: European policy news covering EU institutions, regulation, and geopolitics.

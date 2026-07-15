@@ -109,6 +109,10 @@ async def sync_sources_to_db(
                 enabled=config.enabled,
                 poll_interval_seconds=config.poll_interval_seconds,
                 config=config.config,
+                description=config.description,
+                topics=config.topics,
+                lang=config.lang,
+                country=config.country,
             )
             session.add(existing)
         else:
@@ -117,6 +121,10 @@ async def sync_sources_to_db(
             existing.enabled = config.enabled
             existing.poll_interval_seconds = config.poll_interval_seconds
             existing.config = config.config
+            existing.description = config.description
+            existing.topics = config.topics
+            existing.lang = config.lang
+            existing.country = config.country
 
         synced_rows[config.name] = existing
 

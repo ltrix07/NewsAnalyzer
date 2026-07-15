@@ -39,7 +39,10 @@ class Source(Base):
     """Configured source from which raw content is fetched."""
 
     __tablename__ = "sources"
-    __table_args__ = (UniqueConstraint("name", name="uq_sources_name"),)
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_sources_name"),
+        Index("ix_sources_topics_gin", "topics", postgresql_using="gin"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
@@ -52,6 +55,10 @@ class Source(Base):
         server_default=text("1800"),
     )
     config: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    topics: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    lang: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

@@ -157,16 +157,19 @@ class RSSSource(Source):
     async def fetch(
         self,
         since: datetime | None = None,
+        *,
+        use_cache: bool = True,
     ) -> AsyncIterator[RawArticle]:
         """Yield raw articles from the configured RSS feed."""
 
         settings = get_settings()
-        state = load_state(self.name, settings.raw_storage_path)
         headers: dict[str, str] = {}
-        if state.etag:
-            headers["If-None-Match"] = state.etag
-        if state.last_modified:
-            headers["If-Modified-Since"] = state.last_modified
+        if use_cache:
+            state = load_state(self.name, settings.raw_storage_path)
+            if state.etag:
+                headers["If-None-Match"] = state.etag
+            if state.last_modified:
+                headers["If-Modified-Since"] = state.last_modified
 
         async with _build_async_client(settings.http_timeout_seconds) as client:
             response = await self._request_feed(client, headers)
@@ -174,14 +177,15 @@ class RSSSource(Source):
         if response.status_code == 304:
             return
 
-        save_state(
-            self.name,
-            SourceState(
-                etag=response.headers.get("ETag"),
-                last_modified=response.headers.get("Last-Modified"),
-            ),
-            settings.raw_storage_path,
-        )
+        if use_cache:
+            save_state(
+                self.name,
+                SourceState(
+                    etag=response.headers.get("ETag"),
+                    last_modified=response.headers.get("Last-Modified"),
+                ),
+                settings.raw_storage_path,
+            )
 
         feed = feedparser.parse(response.text)
         feed_language = _entry_value(getattr(feed, "feed", {}), "language")

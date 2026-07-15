@@ -87,7 +87,15 @@ def fast_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
 def _source_config() -> SourceConfig:
     """Return a standard RSS source config for tests."""
 
-    return SourceConfig(name="bankier_rss", kind="rss", url="https://example.com/feed.xml")
+    return SourceConfig(
+        name="bankier_rss",
+        kind="rss",
+        url="https://example.com/feed.xml",
+        description="Example financial news source.",
+        topics=["economy_markets"],
+        lang="pl",
+        country="PL",
+    )
 
 
 def _patch_transport(
@@ -183,6 +191,40 @@ async def test_rss_fetch_saves_and_reuses_conditional_headers(
     assert state.last_modified == "Tue, 03 Jun 2026 12:30:00 GMT"
     assert requests[1].headers["If-None-Match"] == '"etag-1"'
     assert requests[1].headers["If-Modified-Since"] == "Tue, 03 Jun 2026 12:30:00 GMT"
+
+
+@pytest.mark.asyncio
+async def test_rss_fetch_without_cache_ignores_and_preserves_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Cache bypass should send no validators and must not mutate pipeline state."""
+
+    original_state = SourceState(etag='"old-etag"', last_modified="Tue, 02 Jun 2026 12:00:00 GMT")
+    save_state("bankier_rss", original_state, tmp_path)
+    state_path = tmp_path / ".state" / "bankier_rss.json"
+    before = state_path.read_text(encoding="utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "If-None-Match" not in request.headers
+        assert "If-Modified-Since" not in request.headers
+        return httpx.Response(
+            200,
+            headers={
+                "ETag": '"new-etag"',
+                "Last-Modified": "Wed, 03 Jun 2026 12:30:00 GMT",
+            },
+            text=RSS_FEED,
+        )
+
+    _patch_transport(monkeypatch, handler)
+    source = RSSSource(_source_config())
+
+    articles = [article async for article in source.fetch(use_cache=False)]
+
+    assert len(articles) == 3
+    assert state_path.read_text(encoding="utf-8") == before
+    assert load_state("bankier_rss", tmp_path) == original_state
 
 
 @pytest.mark.asyncio
