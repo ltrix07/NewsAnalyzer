@@ -29,6 +29,7 @@ from engine.models import (
     EventMember,
     Impression,
     LinkClick,
+    OnboardingState,
     ResearchPending,
     Source,
     TelegramCursor,
@@ -61,6 +62,7 @@ async def db_session() -> AsyncIterator[AsyncSession]:
                     for model in (
                         TelegramCursor,
                         UIEvent,
+                        OnboardingState,
                         ResearchPending,
                         DiscussionPending,
                         DigestFeedback,

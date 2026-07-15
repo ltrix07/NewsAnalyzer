@@ -63,6 +63,59 @@ UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "You have {count} unread digests.",
     },
     "batch_all_shown": {"ru": "Все дайджесты показаны.", "en": "All digests shown."},
+    "onboarding_welcome": {
+        "ru": "Давайте настроим новости под вас.",
+        "en": "Let's tailor the news to you.",
+    },
+    "onboarding_q_country": {"ru": "Где вы живёте?", "en": "Where do you live?"},
+    "onboarding_q_citizenship": {"ru": "Ваше гражданство?", "en": "What is your citizenship?"},
+    "onboarding_q_languages": {
+        "ru": "На каких языках вы читаете? Выберите все и нажмите «Готово».",
+        "en": "Which languages do you read? Select all, then tap Done.",
+    },
+    "onboarding_q_output": {
+        "ru": "На каком языке присылать дайджест?",
+        "en": "Which language should the digest use?",
+    },
+    "onboarding_q_occupation": {"ru": "Ваша сфера?", "en": "What is your field?"},
+    "onboarding_q_legal": {
+        "ru": "Ваш юридический статус в Польше?",
+        "en": "What is your legal status in Poland?",
+    },
+    "onboarding_q_wanted": {
+        "ru": "Что вам важнее всего не пропустить?",
+        "en": "What do you most want not to miss?",
+    },
+    "onboarding_q_unwanted": {
+        "ru": "Что раздражает и чего никогда не стоит присылать?",
+        "en": "What annoys you or should never be sent?",
+    },
+    "onboarding_q_context": {
+        "ru": "Есть ли что-то важное о вашей ситуации? Можно ответить «нет».",
+        "en": "Anything specific about your situation? You may answer 'no'.",
+    },
+    "onboarding_languages_done": {"ru": "Готово", "en": "Done"},
+    "onboarding_confirm": {"ru": "Всё верно", "en": "Looks right"},
+    "onboarding_summary": {
+        "ru": (
+            "Я понял так:\nЖивёте: {location}\nГражданство: {citizenship}\n"
+            "Языки чтения: {languages}\nЯзык дайджеста: {output_language}\n"
+            "Интересы: {interests}\nНе присылать: {not_interested}"
+        ),
+        "en": (
+            "Here's what I understood:\nResidence: {location}\nCitizenship: {citizenship}\n"
+            "Reading languages: {languages}\nDigest language: {output_language}\n"
+            "Interests: {interests}\nDo not send: {not_interested}"
+        ),
+    },
+    "onboarding_complete": {
+        "ru": "Готово! Дайджесты начнут приходить со следующего запуска.",
+        "en": "All set! Digests will start with the next run.",
+    },
+    "onboarding_invalid": {
+        "ru": "Пожалуйста, используйте кнопки под вопросом.",
+        "en": "Please use the buttons below the question.",
+    },
 }
 
 

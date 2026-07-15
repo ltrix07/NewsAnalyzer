@@ -62,6 +62,22 @@ async def test_add_rejects_duplicate_username_and_chat_id(db_session: AsyncSessi
 
 
 @pytest.mark.asyncio
+async def test_invite_creates_inactive_user_without_profile_and_rejects_duplicate(
+    db_session: AsyncSession,
+) -> None:
+    await users_cli.invite_user_command(username="invitee", chat_id=777, ui_language="en")
+    await db_session.flush()
+    user = await db_session.scalar(select(User).where(User.username == "invitee"))
+    assert user is not None
+    assert user.profile is None
+    assert user.enabled is False
+    assert user.ui_language == "en"
+
+    with pytest.raises(ValueError, match="already exists"):
+        await users_cli.invite_user_command(username="invitee", chat_id=778, ui_language="ru")
+
+
+@pytest.mark.asyncio
 async def test_add_invalid_profile_writes_no_user(db_session: AsyncSession, tmp_path: Path) -> None:
     invalid = tmp_path / "invalid.yaml"
     invalid.write_text("profile:\n  name: invalid\n", encoding="utf-8")

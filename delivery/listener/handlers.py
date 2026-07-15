@@ -19,6 +19,7 @@ from delivery.keyboards import (
     build_dislike_reason_keyboard,
     parse_callback_data,
 )
+from delivery.onboarding import handle_invited_update
 from delivery.strings import t
 from engine.config import Settings
 from engine.db import session_scope
@@ -83,8 +84,21 @@ async def handle_update(
         logger.info("listener_update_ignored_unknown_chat", chat_id=chat_id)
         return HandlerResult()
     user = await get_user_by_chat_id(chat_id, session)
-    if user is None or not user.enabled:
+    if user is None:
         logger.info("listener_update_ignored_unknown_chat", chat_id=chat_id)
+        return HandlerResult()
+    if user.profile is None:
+        await handle_invited_update(
+            session=session,
+            settings=settings,
+            telegram_client=telegram_client,
+            llm_client=llm_client,
+            user=user,
+            update=update,
+        )
+        return HandlerResult()
+    if not user.enabled:
+        logger.info("listener_update_ignored_disabled_user", chat_id=chat_id)
         return HandlerResult()
 
     callback_query = update.get("callback_query")

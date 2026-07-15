@@ -23,6 +23,7 @@ USERNAME_OPTION = typer.Option(..., help="Lowercase profile slug.")
 CHAT_ID_OPTION = typer.Option(None, help="Telegram delivery chat id.")
 PROFILE_OPTION = typer.Option(..., exists=True, dir_okay=False, help="Profile YAML path.")
 UI_LANGUAGE_OPTION = typer.Option("ru", help="Telegram UI language.")
+INVITE_CHAT_ID_OPTION = typer.Option(..., "--chat-id", help="Invited Telegram chat id.")
 
 
 def _validate_username(username: str) -> None:
@@ -71,6 +72,37 @@ def add_user(
     )
 
 
+async def invite_user_command(*, username: str, chat_id: int, ui_language: str) -> None:
+    """Insert an invited, inactive user without a synthesized profile."""
+
+    _validate_username(username)
+    async with session_scope() as session:
+        if await get_user_by_username(username, session) is not None:
+            raise ValueError(f"User '{username}' already exists.")
+        if await get_user_by_chat_id(chat_id, session) is not None:
+            raise ValueError(f"Telegram chat_id {chat_id} already exists.")
+        session.add(
+            User(
+                username=username,
+                chat_id=chat_id,
+                profile=None,
+                ui_language=ui_language,
+                enabled=False,
+            )
+        )
+
+
+@app.command("invite")
+def invite_user(
+    username: str = USERNAME_OPTION,
+    chat_id: int = INVITE_CHAT_ID_OPTION,
+    ui_language: str = UI_LANGUAGE_OPTION,
+) -> None:
+    """Invite a Telegram chat to complete onboarding."""
+
+    asyncio.run(invite_user_command(username=username, chat_id=chat_id, ui_language=ui_language))
+
+
 async def list_users_command() -> None:
     async with session_scope() as session:
         users = list((await session.scalars(select(User).order_by(User.username))).all())
@@ -78,7 +110,7 @@ async def list_users_command() -> None:
     for user in users:
         typer.echo(
             f"{user.username}\t{user.chat_id or '-'}\t{str(user.enabled).lower()}\t"
-            f"{user.ui_language}\t{user.profile['output_language']}"
+            f"{user.ui_language}\t{user.profile['output_language'] if user.profile else '-'}"
         )
 
 

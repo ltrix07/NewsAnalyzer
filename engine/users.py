@@ -37,4 +37,7 @@ async def resolve_profile(username: str, session: AsyncSession) -> Profile:
     if user is None:
         msg = f"User profile '{username}' does not exist in the users table."
         raise LookupError(msg)
+    if user.profile is None:
+        msg = f"User profile '{username}' is not available until onboarding is complete."
+        raise LookupError(msg)
     return Profile.model_validate(user.profile)

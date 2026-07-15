@@ -218,6 +218,30 @@ def build_research_keyboard(
     }
 
 
+def build_onboarding_keyboard(
+    step: int, options: list[tuple[str, str]], *, lang: str = "ru", done: bool = False
+) -> dict[str, list[list[dict[str, str]]]]:
+    """Build a compact one-button-per-row onboarding keyboard."""
+
+    rows = [
+        [{"text": label, "callback_data": _validate_callback_data(f"onb:{step}:{value}")}]
+        for value, label in options
+    ]
+    if done:
+        rows.append(
+            [{"text": t("onboarding_languages_done", lang), "callback_data": f"onb:{step}:done"}]
+        )
+    return {"inline_keyboard": rows}
+
+
+def build_onboarding_confirm_keyboard(*, lang: str = "ru") -> dict[str, list[list[dict[str, str]]]]:
+    return {
+        "inline_keyboard": [
+            [{"text": t("onboarding_confirm", lang), "callback_data": "onb:confirm:yes"}]
+        ]
+    }
+
+
 def _parse_positive_int(value: str) -> int | None:
     try:
         parsed = int(value)

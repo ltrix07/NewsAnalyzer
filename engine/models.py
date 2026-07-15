@@ -81,7 +81,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(String, nullable=False)
     chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    profile: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    profile: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     ui_language: Mapped[str] = mapped_column(
         String, nullable=False, default="ru", server_default=text("'ru'")
     )
@@ -375,6 +375,22 @@ class DiscussionPending(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=text("now()"),
+    )
+
+
+class OnboardingState(Base):
+    """Persisted progress for one invited user's questionnaire."""
+
+    __tablename__ = "onboarding_state"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    step: Mapped[int] = mapped_column(Integer, nullable=False)
+    answers: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
 
 
