@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from time import perf_counter
 from typing import cast
@@ -64,9 +65,11 @@ async def load_summarize_candidates(
     *,
     limit: int | None = None,
     profile_name: str,
+    selection_window_hours: int,
 ) -> list[VerifiedEventDTO]:
     """Load verified events that do not yet have a summarize decision."""
 
+    cutoff = datetime.now(UTC) - timedelta(hours=selection_window_hours)
     has_verify = exists(
         select(1).where(
             DecisionModel.stage_name == "verify",
@@ -83,7 +86,15 @@ async def load_summarize_candidates(
             DecisionModel.profile_name == profile_name,
         )
     )
-    stmt = select(EventModel).where(has_verify, ~has_summarize).order_by(EventModel.id)
+    stmt = (
+        select(EventModel)
+        .where(
+            EventModel.last_seen_at >= cutoff,
+            has_verify,
+            ~has_summarize,
+        )
+        .order_by(EventModel.id)
+    )
     events = (await session.scalars(stmt)).all()
 
     candidates: list[VerifiedEventDTO] = []
@@ -166,6 +177,7 @@ async def summarize_command(
             session,
             limit=limit,
             profile_name=profile_name,
+            selection_window_hours=settings.selection_window_hours,
         )
         ctx = Context(
             run_id=resolved_run_id,

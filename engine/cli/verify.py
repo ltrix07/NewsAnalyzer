@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from time import perf_counter
 from typing import cast
@@ -59,9 +60,11 @@ async def load_verify_candidates(
     limit: int | None = None,
     event_id: int | None = None,
     profile_name: str,
+    selection_window_hours: int,
 ) -> list[ScoredEventDTO]:
     """Load relevance-approved events that have not yet been verified."""
 
+    cutoff = datetime.now(UTC) - timedelta(hours=selection_window_hours)
     has_any_relevance = exists(
         select(1).where(
             DecisionModel.stage_name == "relevance",
@@ -78,7 +81,15 @@ async def load_verify_candidates(
             DecisionModel.profile_name == profile_name,
         )
     )
-    stmt = select(EventModel).where(has_any_relevance, ~has_verify).order_by(EventModel.id)
+    stmt = (
+        select(EventModel)
+        .where(
+            EventModel.last_seen_at >= cutoff,
+            has_any_relevance,
+            ~has_verify,
+        )
+        .order_by(EventModel.id)
+    )
     if event_id is not None:
         stmt = stmt.where(EventModel.id == event_id)
 
@@ -131,6 +142,7 @@ async def verify_command(
             session,
             limit=limit,
             profile_name=profile_name,
+            selection_window_hours=settings.selection_window_hours,
         )
         ctx = Context(
             run_id=resolved_run_id,

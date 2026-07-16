@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     http_timeout_seconds: float = 30.0
     cluster_similarity_threshold: float = 0.82
     cluster_window_hours: int = 36
+    # Skip stale per-user work after long outages; missed history is intentionally not backfilled.
+    selection_window_hours: int = 72
     consolidate_enabled: bool = True
     consolidate_window_hours: int = 36
     consolidate_candidate_min_similarity: float = 0.50

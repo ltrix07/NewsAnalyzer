@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from time import perf_counter
 from uuid import UUID, uuid4
 
 import typer
 from sqlalchemy import exists, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from engine.config import get_settings
 from engine.db import session_scope
@@ -24,6 +26,48 @@ from engine.users import resolve_profile
 LIMIT_OPTION = typer.Option(default=None, min=1, help="Process at most this many events.")
 PROFILE_OPTION = typer.Option(default=None, help="Override the configured profile name.")
 MODEL_OPTION = typer.Option(default=None, help="Override the configured OpenAI model.")
+
+
+async def load_score_candidates(
+    session: AsyncSession,
+    *,
+    profile_name: str,
+    selection_window_hours: int,
+    limit: int | None = None,
+) -> list[EventDTO]:
+    """Load fresh keyword-filtered events that have not yet been scored."""
+
+    cutoff = datetime.now(UTC) - timedelta(hours=selection_window_hours)
+    passed_keyword_filter = exists(
+        select(1).where(
+            DecisionModel.stage_name == "keyword_filter",
+            DecisionModel.target_type == "event",
+            DecisionModel.target_id == EventModel.id,
+            DecisionModel.profile_name == profile_name,
+            DecisionModel.decision_json["action"].astext == "passed_keyword_filter",
+        )
+    )
+    already_scored = exists(
+        select(1).where(
+            DecisionModel.stage_name == "relevance",
+            DecisionModel.target_type == "event",
+            DecisionModel.target_id == EventModel.id,
+            DecisionModel.profile_name == profile_name,
+        )
+    )
+    stmt = (
+        select(EventModel)
+        .where(
+            EventModel.last_seen_at >= cutoff,
+            passed_keyword_filter,
+            ~already_scored,
+        )
+        .order_by(EventModel.id)
+    )
+    if limit is not None:
+        stmt = stmt.limit(limit)
+
+    return [EventDTO.model_validate(event) for event in (await session.scalars(stmt)).all()]
 
 
 async def score_command(
@@ -50,30 +94,12 @@ async def score_command(
             resolved_profile,
             model or settings.openai_model_relevance,
         )
-        passed_keyword_filter = exists(
-            select(1).where(
-                DecisionModel.stage_name == "keyword_filter",
-                DecisionModel.target_type == "event",
-                DecisionModel.target_id == EventModel.id,
-                DecisionModel.profile_name == profile_name,
-                DecisionModel.decision_json["action"].astext == "passed_keyword_filter",
-            )
+        events = await load_score_candidates(
+            session,
+            profile_name=profile_name,
+            selection_window_hours=settings.selection_window_hours,
+            limit=limit,
         )
-        already_scored = exists(
-            select(1).where(
-                DecisionModel.stage_name == "relevance",
-                DecisionModel.target_type == "event",
-                DecisionModel.target_id == EventModel.id,
-                DecisionModel.profile_name == profile_name,
-            )
-        )
-        stmt = (
-            select(EventModel).where(passed_keyword_filter, ~already_scored).order_by(EventModel.id)
-        )
-        if limit is not None:
-            stmt = stmt.limit(limit)
-
-        events = [EventDTO.model_validate(event) for event in (await session.scalars(stmt)).all()]
         ctx = Context(
             run_id=resolved_run_id,
             session=session,

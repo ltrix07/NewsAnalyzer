@@ -266,6 +266,7 @@ async def test_summarize_cli_reconstructs_verified_event_and_skips_on_rerun(
     candidates = await summarize_cli.load_summarize_candidates(
         db_session,
         profile_name="volodymyr",
+        selection_window_hours=get_settings().selection_window_hours,
     )
     assert len(candidates) == 1
     assert candidates[0].event.id == event.id
@@ -309,6 +310,7 @@ async def test_summarize_candidates_skip_when_latest_verify_not_verified(
     candidates = await summarize_cli.load_summarize_candidates(
         db_session,
         profile_name="volodymyr",
+        selection_window_hours=get_settings().selection_window_hours,
     )
     await summarize_cli.summarize_command(limit=10, profile=None, model="gpt-4o")
     digest_count = await db_session.scalar(select(func.count()).select_from(Digest))
@@ -336,6 +338,7 @@ async def test_summarize_candidates_skip_when_latest_relevance_is_irrelevant(
     candidates = await summarize_cli.load_summarize_candidates(
         db_session,
         profile_name="volodymyr",
+        selection_window_hours=get_settings().selection_window_hours,
     )
     await summarize_cli.summarize_command(limit=10, profile=None, model="gpt-4o")
     digest_count = await db_session.scalar(select(func.count()).select_from(Digest))

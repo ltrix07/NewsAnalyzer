@@ -199,7 +199,11 @@ async def test_verify_cli_builds_scored_event_and_skips_on_rerun(
     monkeypatch.setattr(verify_cli, "make_llm_client", lambda settings: fake_llm_client)
     monkeypatch.setattr(verify_cli, "session_scope", fake_session_scope)
 
-    candidates = await verify_cli.load_verify_candidates(db_session, profile_name="volodymyr")
+    candidates = await verify_cli.load_verify_candidates(
+        db_session,
+        profile_name="volodymyr",
+        selection_window_hours=get_settings().selection_window_hours,
+    )
     assert len(candidates) == 1
     assert candidates[0].event.id == event.id
     assert candidates[0].verdict == verdict
@@ -234,6 +238,7 @@ async def test_verify_candidates_skip_events_whose_latest_relevance_is_irrelevan
         db_session,
         event_id=event.id,
         profile_name="volodymyr",
+        selection_window_hours=get_settings().selection_window_hours,
     )
     verify_count = await db_session.scalar(
         select(func.count()).select_from(Decision).where(Decision.stage_name == "verify")

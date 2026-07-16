@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from time import perf_counter
 from uuid import UUID, uuid4
 
 import typer
 from sqlalchemy import exists, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from engine.config import get_settings
 from engine.db import session_scope
@@ -21,6 +23,37 @@ from engine.users import resolve_profile
 
 LIMIT_OPTION = typer.Option(default=None, min=1, help="Process at most this many events.")
 PROFILE_OPTION = typer.Option(default=None, help="Override the configured profile name.")
+
+
+async def load_filter_candidates(
+    session: AsyncSession,
+    *,
+    profile_name: str,
+    selection_window_hours: int,
+    limit: int | None = None,
+) -> list[EventDTO]:
+    """Load fresh events that have not yet been filtered for this profile."""
+
+    cutoff = datetime.now(UTC) - timedelta(hours=selection_window_hours)
+    stmt = (
+        select(EventModel)
+        .where(
+            EventModel.last_seen_at >= cutoff,
+            ~exists(
+                select(1).where(
+                    DecisionModel.stage_name == "keyword_filter",
+                    DecisionModel.target_type == "event",
+                    DecisionModel.target_id == EventModel.id,
+                    DecisionModel.profile_name == profile_name,
+                )
+            ),
+        )
+        .order_by(EventModel.id)
+    )
+    if limit is not None:
+        stmt = stmt.limit(limit)
+
+    return [EventDTO.model_validate(event) for event in (await session.scalars(stmt)).all()]
 
 
 async def filter_command(
@@ -40,24 +73,12 @@ async def filter_command(
         resolved_profile = await resolve_profile(username, session)
         profile_name = username
         stage = KeywordFilterStage(resolved_profile.keyword_rules)
-        stmt = (
-            select(EventModel)
-            .where(
-                ~exists(
-                    select(1).where(
-                        DecisionModel.stage_name == "keyword_filter",
-                        DecisionModel.target_type == "event",
-                        DecisionModel.target_id == EventModel.id,
-                        DecisionModel.profile_name == profile_name,
-                    )
-                )
-            )
-            .order_by(EventModel.id)
+        events = await load_filter_candidates(
+            session,
+            profile_name=profile_name,
+            selection_window_hours=settings.selection_window_hours,
+            limit=limit,
         )
-        if limit is not None:
-            stmt = stmt.limit(limit)
-
-        events = [EventDTO.model_validate(event) for event in (await session.scalars(stmt)).all()]
         ctx = Context(
             run_id=resolved_run_id,
             session=session,
