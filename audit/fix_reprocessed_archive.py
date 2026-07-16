@@ -128,8 +128,9 @@ async def report(session, username: str) -> None:
         flag = "STALE (archive)" if stale else "fresh"
         print(f"  id={digest_id} event_day={event_day} [{flag}] {headline}")
 
-    print("\n=== pipeline queue after backfill (what tomorrow's cron would chew) ===")
-    verify_q = (
+    window = get_settings().selection_window_hours
+    print(f"\n=== pipeline queue (selection window = {window}h) ===")
+    rows = (
         await session.execute(
             text(
                 """
@@ -140,7 +141,12 @@ async def report(session, username: str) -> None:
                   WHERE stage_name = 'relevance' AND target_type = 'event'
                     AND profile_name = :username
                   ORDER BY target_id, created_at DESC, id DESC)
-                SELECT count(*) FROM latest l
+                SELECT
+                  count(*) FILTER (
+                    WHERE (now() - e.last_seen_at) <= make_interval(hours => :window)) AS in_window,
+                  count(*) FILTER (
+                    WHERE (now() - e.last_seen_at) > make_interval(hours => :window)) AS stale
+                FROM latest l JOIN events e ON e.id = l.target_id
                 WHERE l.action = 'relevant'
                   AND NOT EXISTS (
                     SELECT 1 FROM decisions d
@@ -148,16 +154,22 @@ async def report(session, username: str) -> None:
                       AND d.target_id = l.target_id AND d.profile_name = :username)
                 """
             ),
-            {"username": username},
+            {"username": username, "window": window},
         )
-    ).scalar()
-    print(f"  events awaiting verify   -> {verify_q}   (cron does 20/run)")
+    ).all()
+    for in_window, stale in rows:
+        print(f"  awaiting verify: {in_window} in window (WILL run), {stale} stale (ignored)")
 
-    summarize_q = (
+    rows = (
         await session.execute(
             text(
                 """
-                SELECT count(*) FROM decisions v
+                SELECT
+                  count(*) FILTER (
+                    WHERE (now() - e.last_seen_at) <= make_interval(hours => :window)) AS in_window,
+                  count(*) FILTER (
+                    WHERE (now() - e.last_seen_at) > make_interval(hours => :window)) AS stale
+                FROM decisions v JOIN events e ON e.id = v.target_id
                 WHERE v.stage_name = 'verify' AND v.target_type = 'event'
                   AND v.profile_name = :username
                   AND NOT EXISTS (
@@ -167,10 +179,11 @@ async def report(session, username: str) -> None:
                       AND s.decision_json->>'event_id' = v.target_id::text)
                 """
             ),
-            {"username": username},
+            {"username": username, "window": window},
         )
-    ).scalar()
-    print(f"  events awaiting summarize -> {summarize_q}   (cron does 15/run)")
+    ).all()
+    for in_window, stale in rows:
+        print(f"  awaiting summarize: {in_window} in window (WILL run), {stale} stale (ignored)")
 
     print(f"\nbackfill username would be: {username!r}")
 
