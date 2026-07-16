@@ -107,6 +107,71 @@ async def report(session, username: str) -> None:
         )
     ).scalar()
     print(f"  undelivered genuinely new (kept) -> {fresh}")
+
+    print("\n=== undelivered digests, by age of their underlying event ===")
+    rows = (
+        await session.execute(
+            text(
+                """
+                SELECT d.id,
+                       date(e.last_seen_at AT TIME ZONE 'Europe/Warsaw') AS event_day,
+                       (now() - e.last_seen_at) > interval '3 days' AS stale,
+                       left(d.headline, 55) AS headline
+                FROM digests d JOIN events e ON e.id = d.event_id
+                WHERE d.delivered_at IS NULL
+                ORDER BY e.last_seen_at
+                """
+            )
+        )
+    ).all()
+    for digest_id, event_day, stale, headline in rows:
+        flag = "STALE (archive)" if stale else "fresh"
+        print(f"  id={digest_id} event_day={event_day} [{flag}] {headline}")
+
+    print("\n=== pipeline queue after backfill (what tomorrow's cron would chew) ===")
+    verify_q = (
+        await session.execute(
+            text(
+                """
+                WITH latest AS (
+                  SELECT DISTINCT ON (target_id) target_id,
+                         decision_json->>'action' AS action
+                  FROM decisions
+                  WHERE stage_name = 'relevance' AND target_type = 'event'
+                    AND profile_name = :username
+                  ORDER BY target_id, created_at DESC, id DESC)
+                SELECT count(*) FROM latest l
+                WHERE l.action = 'relevant'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM decisions d
+                    WHERE d.stage_name = 'verify' AND d.target_type = 'event'
+                      AND d.target_id = l.target_id AND d.profile_name = :username)
+                """
+            ),
+            {"username": username},
+        )
+    ).scalar()
+    print(f"  events awaiting verify   -> {verify_q}   (cron does 20/run)")
+
+    summarize_q = (
+        await session.execute(
+            text(
+                """
+                SELECT count(*) FROM decisions v
+                WHERE v.stage_name = 'verify' AND v.target_type = 'event'
+                  AND v.profile_name = :username
+                  AND NOT EXISTS (
+                    SELECT 1 FROM decisions s
+                    WHERE s.stage_name = 'summarize'
+                      AND s.profile_name = :username
+                      AND s.decision_json->>'event_id' = v.target_id::text)
+                """
+            ),
+            {"username": username},
+        )
+    ).scalar()
+    print(f"  events awaiting summarize -> {summarize_q}   (cron does 15/run)")
+
     print(f"\nbackfill username would be: {username!r}")
 
 
@@ -136,6 +201,19 @@ async def apply(session, username: str) -> None:
         )
     )
     print(f"deleted undelivered duplicate digests -> {result.rowcount}")
+
+    result = await session.execute(
+        text(
+            """
+            DELETE FROM digests d
+            USING events e
+            WHERE e.id = d.event_id
+              AND d.delivered_at IS NULL
+              AND (now() - e.last_seen_at) > interval '3 days'
+            """
+        )
+    )
+    print(f"deleted undelivered digests about stale (archive) events -> {result.rowcount}")
 
 
 async def main() -> None:
