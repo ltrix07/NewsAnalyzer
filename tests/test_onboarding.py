@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -63,6 +64,20 @@ def _callback(chat_id: int, data: str) -> dict[str, Any]:
     }
 
 
+def test_onboarding_asks_only_for_digest_language_with_endonym_labels() -> None:
+    assert all(question.answer_key != "languages" for question in onboarding.QUESTIONS)
+    question = next(
+        question for question in onboarding.QUESTIONS if question.answer_key == "output_language"
+    )
+    assert question.options is not None
+    assert question.options({}, "en") == [
+        ("ru", "Русский"),
+        ("uk", "Українська"),
+        ("pl", "Polski"),
+        ("en", "English"),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_full_onboarding_populates_profile_and_funnel_events(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
@@ -79,7 +94,7 @@ async def test_full_onboarding_populates_profile_and_funnel_events(
             location="Poland",
             residence_country="PL",
             citizenship="Ukraine",
-            languages=["uk", "en"],
+            languages=["en"],
             output_language="en",
             interests=["AI regulation", "Polish immigration law"],
             not_interested=["celebrity gossip"],
@@ -101,12 +116,9 @@ async def test_full_onboarding_populates_profile_and_funnel_events(
     for data in (
         "onb:0:yes",
         "onb:1:PL",
-        "onb:3:uk",
         "onb:3:en",
-        "onb:3:done",
-        "onb:4:en",
-        "onb:5:IT",
-        "onb:6:karta pobytu",
+        "onb:4:IT",
+        "onb:5:karta pobytu",
     ):
         await send(_callback(chat_id, data))
     await send(_message(chat_id, "AI regulation and Polish immigration law"))
@@ -114,7 +126,7 @@ async def test_full_onboarding_populates_profile_and_funnel_events(
     await send(_message(chat_id, "I live in Warsaw"))
 
     state = await db_session.get(OnboardingState, chat_id)
-    assert state is not None and state.step == 10
+    assert state is not None and state.step == 9
     await send(_callback(chat_id, "onb:confirm:yes"))
     await db_session.flush()
 
@@ -123,16 +135,16 @@ async def test_full_onboarding_populates_profile_and_funnel_events(
     assert user.profile["location"] == "Poland"
     assert user.profile["residence_country"] == "PL"
     assert user.profile["citizenship"] == "Ukraine"
-    assert user.profile["languages"] == ["uk", "en"]
+    assert user.profile["languages"] == ["en"]
     assert user.profile["output_language"] == "en"
     assert user.profile["keyword_rules"] == {"keep_if_matches": [], "drop_if_matches": []}
     assert await db_session.get(OnboardingState, chat_id) is None
     actions = list((await db_session.scalars(select(UIEvent.action))).all())
     assert actions.count("onboarding_started") == 1
-    assert actions.count("onboarding_step") == 9
+    assert actions.count("onboarding_step") == 8
     assert actions.count("onboarding_completed") == 1
     callback_ids = [callback_id for callback_id, _text in client.callback_answers]
-    assert len(callback_ids) == 9
+    assert len(callback_ids) == 6
     assert len(callback_ids) == len(set(callback_ids))
 
 
@@ -170,24 +182,31 @@ async def test_invited_feedback_is_ignored_and_start_restarts_state(
 
 @pytest.mark.asyncio
 async def test_language_toggle_acknowledges_and_repaints_selection(
-    db_session: AsyncSession,
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     chat_id = 7003
     db_session.add(User(username="toggle", chat_id=chat_id, profile=None, enabled=False))
     db_session.add(
         OnboardingState(
             chat_id=chat_id,
-            step=3,
-            answers={
-                "name": "Toggle",
-                "citizenship": "Ukraine",
-                "location": "Poland",
-                "residence_country": "PL",
-            },
+            step=0,
+            answers={},
         )
     )
     await db_session.flush()
     client = FakeTelegramClient()
+    monkeypatch.setattr(
+        onboarding,
+        "QUESTIONS",
+        [
+            onboarding.Question(
+                "selections",
+                "multi",
+                "onboarding_q_languages",
+                lambda _answers, _lang: [("one", "One")],
+            )
+        ],
+    )
 
     for _ in range(2):
         await handle_update(
@@ -195,20 +214,20 @@ async def test_language_toggle_acknowledges_and_repaints_selection(
             settings=get_settings(),
             telegram_client=client,  # type: ignore[arg-type]
             llm_client=object(),  # type: ignore[arg-type]
-            update=_callback(chat_id, "onb:3:uk"),
+            update=_callback(chat_id, "onb:0:one"),
         )
 
     assert len(client.callback_answers) == 2
     assert len(client.markup_edits) == 2
     first_labels = [row[0]["text"] for row in client.markup_edits[0][2]["inline_keyboard"]]
     second_labels = [row[0]["text"] for row in client.markup_edits[1][2]["inline_keyboard"]]
-    assert "✅ UA" in first_labels
-    assert "UA" in second_labels and "✅ UA" not in second_labels
+    assert "✅ One" in first_labels
+    assert "One" in second_labels and "✅ One" not in second_labels
 
 
 @pytest.mark.asyncio
 async def test_failed_language_repaint_still_acknowledges_callback(
-    db_session: AsyncSession,
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class FailingRepaintClient(FakeTelegramClient):
         async def edit_message_reply_markup(self, *_: Any, **__: Any) -> dict[str, Any]:
@@ -216,19 +235,31 @@ async def test_failed_language_repaint_still_acknowledges_callback(
 
     chat_id = 7004
     db_session.add(User(username="repaint", chat_id=chat_id, profile=None, enabled=False))
-    db_session.add(OnboardingState(chat_id=chat_id, step=3, answers={"languages": []}))
+    db_session.add(OnboardingState(chat_id=chat_id, step=0, answers={"selections": []}))
     await db_session.flush()
     client = FailingRepaintClient()
+    monkeypatch.setattr(
+        onboarding,
+        "QUESTIONS",
+        [
+            onboarding.Question(
+                "selections",
+                "multi",
+                "onboarding_q_languages",
+                lambda _answers, _lang: [("one", "One")],
+            )
+        ],
+    )
 
     await handle_update(
         session=db_session,
         settings=get_settings(),
         telegram_client=client,  # type: ignore[arg-type]
         llm_client=object(),  # type: ignore[arg-type]
-        update=_callback(chat_id, "onb:3:uk"),
+        update=_callback(chat_id, "onb:0:one"),
     )
 
-    assert client.callback_answers == [("callback-onb:3:uk", "✓")]
+    assert client.callback_answers == [("callback-onb:0:one", "✓")]
 
 
 @pytest.mark.asyncio
@@ -342,7 +373,7 @@ async def test_spain_skips_legal_status_and_synthesizes_correct_profile(
             location=str(answers["location"]),
             residence_country=str(answers["residence_country"]),
             citizenship=str(answers["citizenship"]),
-            languages=list(answers["languages"]),
+            languages=[str(answers["output_language"])],
             output_language=str(answers["output_language"]),
             interests=[str(answers["wanted"])],
             not_interested=[str(answers["unwanted"])],
@@ -365,18 +396,16 @@ async def test_spain_skips_legal_status_and_synthesizes_correct_profile(
         "onb:0:yes",
         "onb:1:ES",
         "onb:3:uk",
-        "onb:3:done",
-        "onb:4:uk",
-        "onb:5:student",
+        "onb:4:student",
     ):
         await send(_callback(chat_id, data))
     state = await db_session.get(OnboardingState, chat_id)
-    assert state is not None and state.step == 7
+    assert state is not None and state.step == 6
     await send(_message(chat_id, "Spanish immigration rules"))
     await send(_message(chat_id, "sports"))
     await send(_message(chat_id, "Madrid"))
 
-    assert state.step == 10
+    assert state.step == 9
     assert "legal_status" not in state.answers
     assert state.answers["profile"]["location"] == "Spain"
     assert state.answers["profile"]["residence_country"] == "ES"
@@ -415,7 +444,7 @@ async def test_question_inserted_at_front_does_not_change_profile_answers(
             location=str(answers["location"]),
             residence_country=str(answers["residence_country"]),
             citizenship=str(answers["citizenship"]),
-            languages=list(answers["languages"]),
+            languages=[str(answers["output_language"])],
             output_language=str(answers["output_language"]),
             interests=[str(answers["wanted"])],
             not_interested=[str(answers["unwanted"])],
@@ -438,12 +467,9 @@ async def test_question_inserted_at_front_does_not_change_profile_answers(
     for data in (
         "onb:1:yes",
         "onb:2:PL",
-        "onb:4:uk",
         "onb:4:en",
-        "onb:4:done",
-        "onb:5:en",
-        "onb:6:IT",
-        "onb:7:karta pobytu",
+        "onb:5:IT",
+        "onb:6:karta pobytu",
     ):
         await send(_callback(chat_id, data))
     await send(_message(chat_id, "AI regulation"))
@@ -458,7 +484,7 @@ async def test_question_inserted_at_front_does_not_change_profile_answers(
         "location": "Poland",
         "residence_country": "PL",
         "citizenship": "Ukraine",
-        "languages": ["uk", "en"],
+        "languages": ["en"],
         "output_language": "en",
         "interests": ["AI regulation"],
         "not_interested": ["celebrity gossip"],
@@ -498,3 +524,70 @@ async def test_country_with_legal_options_but_no_sources_gets_coverage_notice(
     assert onboarding._has_legal_options({"residence_country": "DE"}) is True
     assert onboarding._has_residence_coverage({"residence_country": "DE"}) is False
     assert any("are not available yet" in text for _chat, text, _markup in client.messages)
+
+
+@pytest.mark.asyncio
+async def test_profile_synthesis_derives_languages_from_output_language() -> None:
+    answers = {
+        "name": "Ada",
+        "location": "Poland",
+        "residence_country": "PL",
+        "citizenship": "Ukraine",
+        "output_language": "uk",
+        "occupation": "IT",
+        "wanted": "AI regulation",
+        "unwanted": "celebrity gossip",
+        "context": "Warsaw",
+    }
+    llm_output = Profile(
+        name="wrong",
+        location="wrong",
+        residence_country="ZZ",
+        citizenship="wrong",
+        languages=["en", "pl"],
+        output_language="en",
+        interests=["AI regulation"],
+        not_interested=["celebrity gossip"],
+        keyword_rules=KeywordRules(),
+    )
+
+    class SuccessfulLLM:
+        async def call_structured(self, **kwargs: Any) -> Any:
+            assert '"languages": ["uk"]' in kwargs["prompt"]
+            return SimpleNamespace(output=llm_output)
+
+    profile = await onboarding.synthesize_profile(
+        get_settings(),
+        SuccessfulLLM(),  # type: ignore[arg-type]
+        answers,
+    )
+
+    assert profile.languages == ["uk"]
+    assert profile.output_language == "uk"
+
+
+@pytest.mark.asyncio
+async def test_profile_synthesis_fallback_derives_languages_from_output_language() -> None:
+    answers = {
+        "name": "Ada",
+        "location": "Poland",
+        "residence_country": "PL",
+        "citizenship": "Ukraine",
+        "output_language": "pl",
+        "occupation": "IT",
+        "wanted": "AI regulation",
+        "unwanted": "celebrity gossip",
+    }
+
+    class FailingLLM:
+        async def call_structured(self, **_kwargs: Any) -> Any:
+            raise RuntimeError("synthetic failure")
+
+    profile = await onboarding.synthesize_profile(
+        get_settings(),
+        FailingLLM(),
+        answers,  # type: ignore[arg-type]
+    )
+
+    assert profile.languages == ["pl"]
+    assert profile.output_language == "pl"

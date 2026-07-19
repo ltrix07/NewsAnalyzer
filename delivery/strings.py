@@ -95,8 +95,8 @@ UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "Which languages do you read? Select all, then tap Done.",
     },
     "onboarding_q_output": {
-        "ru": "На каком языке присылать дайджест?",
-        "en": "Which language should the digest use?",
+        "ru": "На каком языке писать дайджесты?",
+        "en": "Which language should your digests be written in?",
     },
     "onboarding_q_occupation": {"ru": "Ваша сфера?", "en": "What is your field?"},
     "onboarding_q_legal": {
@@ -120,12 +120,12 @@ UI_STRINGS: dict[str, dict[str, str]] = {
     "onboarding_summary": {
         "ru": (
             "Я понял так:\nЖивёте: {location}\nГражданство: {citizenship}\n"
-            "Языки чтения: {languages}\nЯзык дайджеста: {output_language}\n"
+            "Язык дайджеста: {output_language}\n"
             "Интересы: {interests}\nНе присылать: {not_interested}"
         ),
         "en": (
             "Here's what I understood:\nResidence: {location}\nCitizenship: {citizenship}\n"
-            "Reading languages: {languages}\nDigest language: {output_language}\n"
+            "Digest language: {output_language}\n"
             "Interests: {interests}\nDo not send: {not_interested}"
         ),
     },

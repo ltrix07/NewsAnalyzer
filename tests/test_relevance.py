@@ -161,11 +161,14 @@ def test_relevance_v4_renders_every_configured_country() -> None:
         assert f"B. {country['labels']['en'].upper()} AS IT AFFECTS FOREIGN RESIDENTS" in prompt
 
 
-def test_relevance_v4_languages_anti_pattern_uses_profile_languages() -> None:
-    prompt = _render_v4(_profile("ES"))
+@pytest.mark.parametrize("country_code", [*load_country_registry(), None, "ZZ"])
+def test_relevance_v4_never_uses_language_for_selection(country_code: str | None) -> None:
+    prompt = _render_v4(_profile(country_code))
 
-    assert "article is in ru or en" in prompt
-    assert "article is in Polish or Ukrainian or Russian" not in prompt
+    assert "Languages they read" not in prompt
+    assert "ru or en" not in prompt
+    assert "Do NOT reject an article because of the language it is written in" in prompt
+    assert "whatever\n   that language is" in prompt
 
 
 def test_relevance_v4_empty_country_slots_render_generic_category() -> None:
@@ -196,6 +199,7 @@ def test_relevance_stage_defaults_to_v3() -> None:
 
     assert stage.version == "v3"
     assert "USER'S PROFESSION (retail algorithmic trading)" in stage.render([])
+    assert "Languages they read: ru, en" in stage.render([])
 
 
 @pytest.mark.asyncio

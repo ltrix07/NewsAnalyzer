@@ -3,7 +3,6 @@ You are filtering news events for one specific user. Decide whether this event i
 USER PROFILE
 - Location: {{ profile.location }}
 - Citizenship: {{ profile.citizenship }}
-- Languages they read: {{ profile.languages | join(", ") }}
 
 INTERESTS the user cares about:
 {% for interest in profile.interests -%}
@@ -140,8 +139,8 @@ Prior runs systematically made these errors. Do NOT repeat them.
    "no immediate change for the user". The progress of EU negotiations and EU
    policy on Ukrainians IS the user's interest.
 
-5. Do NOT reject because the article is in {{ profile.languages | join(" or ") }} —
-   language is not a filter. Match on topic regardless of source language.
+5. Do NOT reject an article because of the language it is written in, whatever
+   that language is. Language is not a filter; match on topic regardless of source language.
 
 ================================================================
 GROUNDING RULES

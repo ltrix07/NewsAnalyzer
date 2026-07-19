@@ -154,16 +154,17 @@ QUESTIONS = [
         completes_residence=True,
     ),
     Question(
-        "languages",
-        "multi",
-        "onboarding_q_languages",
-        _static_options([("uk", "UA"), ("ru", "RU"), ("pl", "PL"), ("en", "EN")]),
-    ),
-    Question(
         "output_language",
         "single",
         "onboarding_q_output",
-        _static_options([("ru", "RU"), ("uk", "UK"), ("pl", "PL"), ("en", "EN")]),
+        _static_options(
+            [
+                ("ru", "Русский"),
+                ("uk", "Українська"),
+                ("pl", "Polski"),
+                ("en", "English"),
+            ]
+        ),
     ),
     Question(
         "occupation",
@@ -415,7 +416,6 @@ async def _send_current_question(
     summary = t("onboarding_summary", user.ui_language).format(
         location=escape(profile.location),
         citizenship=escape(profile.citizenship),
-        languages=escape(", ".join(profile.languages)),
         output_language=escape(profile.output_language),
         interests=escape(", ".join(profile.interests) or "—"),
         not_interested=escape(", ".join(profile.not_interested) or "—"),
@@ -442,18 +442,19 @@ async def synthesize_profile(
 ) -> Profile:
     """Synthesize taste lists, while always enforcing deterministic answers."""
 
+    output_language = str(answers["output_language"])
     deterministic = dict(
         name=str(answers["name"]),
         location=str(answers["location"]),
         residence_country=str(answers["residence_country"]),
         citizenship=str(answers["citizenship"]),
-        languages=list(answers["languages"]),
-        output_language=str(answers["output_language"]),
+        languages=[output_language],
+        output_language=output_language,
         keyword_rules=KeywordRules(),
     )
     prompt_path = Path(__file__).parents[1] / "engine/llm/prompts/onboarding_profile.j2"
     prompt = Template(prompt_path.read_text(encoding="utf-8")).render(
-        answers=json.dumps(answers, ensure_ascii=False)
+        answers=json.dumps({**answers, "languages": [output_language]}, ensure_ascii=False)
     )
     try:
         response = await llm.call_structured(
@@ -473,8 +474,8 @@ async def synthesize_profile(
             location=str(answers["location"]),
             residence_country=str(answers["residence_country"]),
             citizenship=str(answers["citizenship"]),
-            languages=[str(item) for item in answers["languages"]],
-            output_language=str(answers["output_language"]),
+            languages=[output_language],
+            output_language=output_language,
             interests=[item for item in (wanted, occupation) if item],
             not_interested=[unwanted] if unwanted else [],
             keyword_rules=KeywordRules(),
