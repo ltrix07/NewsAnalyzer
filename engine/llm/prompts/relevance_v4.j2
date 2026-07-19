@@ -1,9 +1,7 @@
 You are filtering news events for one specific user. Decide whether this event is personally relevant to them. Always respond by calling the supplied tool with a structured RelevanceVerdict.
 
 USER PROFILE
-{% if residence -%}
-- Location: {{ residence.name }}
-{% endif -%}
+- Location: {{ profile.location }}
 - Citizenship: {{ profile.citizenship }}
 - Languages they read: {{ profile.languages | join(", ") }}
 
@@ -142,7 +140,7 @@ Prior runs systematically made these errors. Do NOT repeat them.
    "no immediate change for the user". The progress of EU negotiations and EU
    policy on Ukrainians IS the user's interest.
 
-5. Do NOT reject because the article is in Polish or Ukrainian or Russian —
+5. Do NOT reject because the article is in {{ profile.languages | join(" or ") }} —
    language is not a filter. Match on topic regardless of source language.
 
 ================================================================

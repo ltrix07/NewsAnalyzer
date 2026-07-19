@@ -4,10 +4,21 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
+import yaml  # type: ignore[import-untyped]
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_REQUIRED_RESIDENCE_PROMPT_SLOTS = frozenset(
+    {
+        "residence_and_work_terms",
+        "migration_policy_terms",
+        "central_bank",
+        "currency",
+        "financial_regulator",
+    }
+)
 
 
 class Settings(BaseSettings):
@@ -130,3 +141,44 @@ def get_settings() -> Settings:
     """Return a cached settings instance."""
 
     return Settings()
+
+
+def load_country_registry(path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """Load countries and enforce complete-or-empty relevance prompt slots."""
+
+    if path is None:
+        return _cached_country_registry()
+    return _read_country_registry(path)
+
+
+@lru_cache(maxsize=1)
+def _cached_country_registry() -> dict[str, dict[str, Any]]:
+    return _read_country_registry(Path(__file__).resolve().parents[1] / "config/countries.yaml")
+
+
+def _read_country_registry(path: Path) -> dict[str, dict[str, Any]]:
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    countries = payload.get("countries") if isinstance(payload, dict) else None
+    if not isinstance(countries, dict):
+        msg = f"{path} must contain a countries mapping"
+        raise RuntimeError(msg)
+
+    for country_code, country in countries.items():
+        if not isinstance(country, dict):
+            msg = f"Country {country_code} in {path} must be a mapping"
+            raise RuntimeError(msg)
+        slots = country.get("residence_prompt_slots") or {}
+        if not isinstance(slots, dict):
+            msg = f"Country {country_code} residence_prompt_slots must be a mapping"
+            raise RuntimeError(msg)
+        if slots:
+            missing = sorted(
+                key for key in _REQUIRED_RESIDENCE_PROMPT_SLOTS if not slots.get(key)
+            )
+            if missing:
+                msg = (
+                    f"Country {country_code} has incomplete residence_prompt_slots; "
+                    f"missing or empty keys: {', '.join(missing)}"
+                )
+                raise RuntimeError(msg)
+    return countries

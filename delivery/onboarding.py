@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from delivery.client import TelegramBotClient
 from delivery.keyboards import build_onboarding_confirm_keyboard, build_onboarding_keyboard
 from delivery.strings import t
-from engine.config import Settings
+from engine.config import Settings, load_country_registry
 from engine.llm.client import LLMClient
 from engine.models import OnboardingState, UIEvent, User
 from engine.profile import KeywordRules, Profile
@@ -52,13 +52,7 @@ def _static_options(options: list[tuple[str, str]]) -> OptionsFactory:
 
 @lru_cache(maxsize=1)
 def _countries() -> dict[str, dict[str, Any]]:
-    path = Path(__file__).parents[1] / "config/countries.yaml"
-    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    countries = payload.get("countries") if isinstance(payload, dict) else None
-    if not isinstance(countries, dict):
-        msg = f"{path} must contain a countries mapping"
-        raise RuntimeError(msg)
-    return countries
+    return load_country_registry()
 
 
 def _country_options(_answers: dict[str, Any], lang: str) -> list[tuple[str, str]]:

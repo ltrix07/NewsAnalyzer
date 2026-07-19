@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from engine.cli import compare_relevance
-from engine.config import get_settings
+from engine.config import get_settings, load_country_registry
 from engine.domain import Event as EventDTO
 from engine.llm.client import LLMResponse, LLMUsage
 from engine.llm.schemas import RelevanceVerdict
@@ -118,6 +118,7 @@ def _render_v4(profile: Profile) -> str:
 def test_relevance_v4_renders_polish_residence_slots() -> None:
     prompt = _render_v4(_profile("PL"))
 
+    assert "Location: PL (Warsaw)" in prompt
     assert "B. POLAND AS IT AFFECTS FOREIGN RESIDENTS" in prompt
     assert "karta pobytu" in prompt
     assert "cudzoziemcy" in prompt
@@ -127,7 +128,7 @@ def test_relevance_v4_renders_polish_residence_slots() -> None:
     assert "C. UA-PL BILATERAL" in prompt
 
 
-@pytest.mark.parametrize("country_code", [None, "ZZ"])
+@pytest.mark.parametrize("country_code", [None])
 def test_relevance_v4_unknown_residence_keeps_ua_tier_without_residence_categories(
     country_code: str | None,
 ) -> None:
@@ -138,11 +139,33 @@ def test_relevance_v4_unknown_residence_keeps_ua_tier_without_residence_categori
     assert "B." not in prompt
     assert "C." not in prompt
     assert "ZZ" not in prompt
-    assert "Unknown place" not in prompt
+    assert "Location: Unknown place" in prompt
     assert (
         "do not reject an article merely because its reported development occurs outside Ukraine"
         in prompt
     )
+
+
+def test_relevance_v4_zz_residence_renders_free_text_location_without_residence_tiers() -> None:
+    prompt = _render_v4(_profile("ZZ", location="Portugal"))
+
+    assert "Location: Portugal" in prompt
+    assert "B." not in prompt
+    assert "C." not in prompt
+
+
+def test_relevance_v4_renders_every_configured_country() -> None:
+    for country_code, country in load_country_registry().items():
+        prompt = _render_v4(_profile(country_code))
+
+        assert f"B. {country['labels']['en'].upper()} AS IT AFFECTS FOREIGN RESIDENTS" in prompt
+
+
+def test_relevance_v4_languages_anti_pattern_uses_profile_languages() -> None:
+    prompt = _render_v4(_profile("ES"))
+
+    assert "article is in ru or en" in prompt
+    assert "article is in Polish or Ukrainian or Russian" not in prompt
 
 
 def test_relevance_v4_empty_country_slots_render_generic_category() -> None:

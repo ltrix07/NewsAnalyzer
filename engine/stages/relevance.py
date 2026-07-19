@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
-import yaml  # type: ignore[import-untyped]
-
+from engine.config import load_country_registry
 from engine.domain import Event as EventDTO
 from engine.domain import ScoredEvent as ScoredEventDTO
 from engine.llm.client import LLMClient
@@ -86,21 +83,10 @@ class RelevanceStage(Stage[EventDTO, ScoredEventDTO]):
         return await self.evaluate(event, ctx)
 
 
-@lru_cache(maxsize=1)
-def _country_registry() -> dict[str, dict[str, Any]]:
-    path = Path(__file__).resolve().parents[2] / "config/countries.yaml"
-    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    countries = payload.get("countries") if isinstance(payload, dict) else None
-    if not isinstance(countries, dict):
-        msg = f"{path} must contain a countries mapping"
-        raise RuntimeError(msg)
-    return countries
-
-
 def _residence_context(country_code: str | None) -> dict[str, Any] | None:
     if country_code is None or country_code == "ZZ":
         return None
-    country = _country_registry().get(country_code)
+    country = load_country_registry().get(country_code)
     if country is None:
         return None
     labels = country.get("labels", {})
