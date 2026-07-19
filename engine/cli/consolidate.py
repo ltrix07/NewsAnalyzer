@@ -20,7 +20,7 @@ from engine.observability import record_decision
 from engine.stages.base import DecisionDraft
 
 STAGE_NAME = "consolidate"
-STAGE_VERSION = "v1"
+STAGE_VERSION = "v2"
 
 WINDOW_HOURS_OPTION = typer.Option(
     default=None,
@@ -73,7 +73,7 @@ async def _load_candidates(session: AsyncSession, *, window_hours: int) -> list[
     rows = await session.scalars(
         select(Event)
         .where(
-            Event.last_seen_at >= window_cutoff,
+            Event.created_at >= window_cutoff,
             ~exists(
                 select(1).where(
                     Decision.stage_name == "keyword_filter",
@@ -93,7 +93,6 @@ async def _candidate_pairs(
     candidates: list[Event],
     *,
     min_similarity: float,
-    cluster_threshold: float,
     max_neighbors: int,
 ) -> list[tuple[int, int]]:
     """Find unordered candidate event pairs by centroid proximity."""
@@ -116,7 +115,7 @@ async def _candidate_pairs(
 
         for other_id, distance in rows:
             similarity = 1.0 - float(distance)
-            if min_similarity <= similarity < cluster_threshold:
+            if similarity >= min_similarity:
                 resolved_other_id = int(other_id)
                 pairs.add((min(event.id, resolved_other_id), max(event.id, resolved_other_id)))
 
@@ -244,7 +243,6 @@ async def consolidate_command(
                 session,
                 candidates,
                 min_similarity=resolved_min_similarity,
-                cluster_threshold=settings.cluster_similarity_threshold,
                 max_neighbors=resolved_max_neighbors,
             )
             union_find = _UnionFind([event.id for event in candidates])

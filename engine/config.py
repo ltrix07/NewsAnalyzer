@@ -6,6 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,11 +33,11 @@ class Settings(BaseSettings):
     raw_storage_path: Path = Path("raw")
     http_timeout_seconds: float = 30.0
     cluster_similarity_threshold: float = 0.82
-    cluster_window_hours: int = 36
+    cluster_window_hours: int = 72
     # Skip stale per-user work after long outages; missed history is intentionally not backfilled.
     selection_window_hours: int = 72
     consolidate_enabled: bool = True
-    consolidate_window_hours: int = 36
+    consolidate_window_hours: int = 72
     consolidate_candidate_min_similarity: float = 0.50
     consolidate_max_neighbors: int = 5
     thread_updates_enabled: bool = True
@@ -65,6 +66,20 @@ class Settings(BaseSettings):
     taste_weight: float = 1.0
     significance_weight: float = 0.5
     taste_min_labels_per_class: int = 3
+
+    @model_validator(mode="after")
+    def validate_merge_windows_cover_selection_window(self) -> Settings:
+        """Prevent selectable events from falling outside both merge windows."""
+
+        if min(self.cluster_window_hours, self.consolidate_window_hours) < (
+            self.selection_window_hours
+        ):
+            msg = (
+                "cluster_window_hours and consolidate_window_hours must each be at least "
+                "selection_window_hours"
+            )
+            raise ValueError(msg)
+        return self
 
     def require_database_url(self) -> str:
         """Return the configured database URL or raise a clear runtime error."""

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 from sqlalchemy import select
 
@@ -18,7 +18,7 @@ class ClusterStage(Stage[ArticleDTO, EventDTO]):
     """Assign one embedded article to the nearest recent event or create a new event."""
 
     name = "cluster"
-    version = "v1"
+    version = "v2"
 
     def __init__(self, similarity_threshold: float, window_hours: int) -> None:
         self.similarity_threshold = similarity_threshold
@@ -58,12 +58,15 @@ class ClusterStage(Stage[ArticleDTO, EventDTO]):
 
         effective_time = item.published_at or item.fetched_at
         vector = [float(value) for value in embedding.vector]
-        window_cutoff = datetime.now(UTC) - timedelta(hours=self.window_hours)
+        window = timedelta(hours=self.window_hours)
         distance_expr = EventModel.centroid.cosine_distance(vector).label("distance")
         nearest_row = (
             await ctx.session.execute(
                 select(EventModel, distance_expr)
-                .where(EventModel.last_seen_at >= window_cutoff)
+                .where(
+                    EventModel.last_seen_at >= effective_time - window,
+                    EventModel.first_seen_at <= effective_time + window,
+                )
                 .order_by(distance_expr)
                 .limit(1)
             )

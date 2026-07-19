@@ -107,6 +107,60 @@ async def test_cluster_stage_groups_identical_vectors_into_one_event(
 
 
 @pytest.mark.asyncio
+async def test_cluster_stage_groups_backlog_articles_by_publication_time(
+    db_session: AsyncSession,
+) -> None:
+    source = await _create_source(db_session)
+    published_at = datetime.now(UTC) - timedelta(hours=72)
+    articles = [
+        await _create_article_with_embedding(
+            db_session,
+            source.id,
+            f"f{index}",
+            _vector(1.0),
+            published_at=published_at + timedelta(minutes=30 * index),
+        )
+        for index in range(6)
+    ]
+    stage = ClusterStage(similarity_threshold=0.82, window_hours=72)
+    ctx = _context(db_session)
+
+    for article in articles:
+        await stage.run(ArticleDTO.model_validate(article), ctx)
+
+    events = await _events_for_articles(db_session, [article.id for article in articles])
+
+    assert len(events) == 1
+    assert events[0].article_count == 6
+
+
+@pytest.mark.asyncio
+async def test_cluster_stage_is_time_local_for_articles_ingested_days_late(
+    db_session: AsyncSession,
+) -> None:
+    source = await _create_source(db_session)
+    published_at = datetime.now(UTC) - timedelta(days=3)
+    first = await _create_article_with_embedding(
+        db_session, source.id, "late-a", _vector(1.0), published_at=published_at
+    )
+    second = await _create_article_with_embedding(
+        db_session,
+        source.id,
+        "late-b",
+        _vector(1.0),
+        published_at=published_at + timedelta(hours=1),
+    )
+    stage = ClusterStage(similarity_threshold=0.82, window_hours=36)
+    ctx = _context(db_session)
+
+    await stage.run(ArticleDTO.model_validate(first), ctx)
+    result = await stage.run(ArticleDTO.model_validate(second), ctx)
+
+    assert result.draft.decision_json["action"] == "joined_event"
+    assert len(await _events_for_articles(db_session, [first.id, second.id])) == 1
+
+
+@pytest.mark.asyncio
 async def test_cluster_stage_splits_orthogonal_vectors_into_separate_events(
     db_session: AsyncSession,
 ) -> None:

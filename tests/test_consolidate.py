@@ -42,6 +42,7 @@ async def _create_event(
     article_count: int = 1,
     first_seen_at: datetime | None = None,
     last_seen_at: datetime | None = None,
+    created_at: datetime | None = None,
 ) -> Event:
     now = datetime.now(UTC)
     article = Article(
@@ -59,6 +60,7 @@ async def _create_event(
         first_seen_at=first_seen_at or now,
         last_seen_at=last_seen_at or now,
         status="open",
+        created_at=created_at or now,
     )
     session.add_all([article, event])
     await session.flush()
@@ -299,3 +301,49 @@ async def test_consolidate_candidates_remain_global_across_profiles(
     candidates = await consolidate_cli._load_candidates(db_session, window_hours=24)
 
     assert [event.id for event in candidates] == [untouched.id]
+
+
+@pytest.mark.asyncio
+async def test_consolidate_candidates_use_creation_time_not_story_time(
+    db_session: AsyncSession,
+) -> None:
+    source = await _create_source(db_session)
+    now = datetime.now(UTC)
+    fresh_backlog = await _create_event(
+        db_session,
+        source,
+        suffix="fresh-backlog",
+        vector=_vector(12),
+        last_seen_at=now - timedelta(days=7),
+        created_at=now,
+    )
+    await _create_event(
+        db_session,
+        source,
+        suffix="old-ingestion",
+        vector=_vector(13),
+        last_seen_at=now,
+        created_at=now - timedelta(days=7),
+    )
+
+    candidates = await consolidate_cli._load_candidates(db_session, window_hours=72)
+
+    assert [event.id for event in candidates] == [fresh_backlog.id]
+
+
+@pytest.mark.asyncio
+async def test_candidate_pairs_include_similarity_above_cluster_threshold(
+    db_session: AsyncSession,
+) -> None:
+    source = await _create_source(db_session)
+    first = await _create_event(db_session, source, suffix="high-a", vector=_vector(14))
+    second = await _create_event(db_session, source, suffix="high-b", vector=_vector(14))
+
+    pairs = await consolidate_cli._candidate_pairs(
+        db_session,
+        [first, second],
+        min_similarity=0.50,
+        max_neighbors=1,
+    )
+
+    assert pairs == [(first.id, second.id)]
