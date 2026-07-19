@@ -31,6 +31,7 @@ logger = structlog.get_logger(__name__)
 QuestionKind = Literal["single", "multi", "text"]
 OptionsFactory = Callable[[dict[str, Any], str], list[tuple[str, str]]]
 Predicate = Callable[[dict[str, Any]], bool]
+AnswerStore = Callable[[dict[str, Any], Any, str], dict[str, Any]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +41,9 @@ class Question:
     prompt_key: str
     options: OptionsFactory | None = None
     applies: Predicate = lambda _answers: True
+    store: AnswerStore | None = None
+    ineligible_value: str | None = None
+    completes_residence: bool = False
 
 
 def _static_options(options: list[tuple[str, str]]) -> OptionsFactory:
@@ -78,19 +82,82 @@ def _has_legal_options(answers: dict[str, Any]) -> bool:
     return bool(_legal_options(answers, "ru"))
 
 
+@lru_cache(maxsize=1)
+def _source_countries() -> frozenset[str]:
+    path = Path(__file__).parents[1] / "config/sources.yaml"
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    sources = payload.get("sources") if isinstance(payload, dict) else None
+    if not isinstance(sources, list):
+        msg = f"{path} must contain a sources list"
+        raise RuntimeError(msg)
+    return frozenset(
+        str(source["country"])
+        for source in sources
+        if isinstance(source, dict) and source.get("enabled") is True and source.get("country")
+    )
+
+
+def _has_residence_coverage(answers: dict[str, Any]) -> bool:
+    return str(answers.get("residence_country")) in _source_countries()
+
+
+def _store_answer(key: str) -> AnswerStore:
+    def store(answers: dict[str, Any], value: Any, _lang: str) -> dict[str, Any]:
+        return {**answers, key: value}
+
+    return store
+
+
+def _store_ukrainian_citizenship(
+    answers: dict[str, Any], _value: Any, _lang: str
+) -> dict[str, Any]:
+    return {**answers, "citizenship": "Ukraine"}
+
+
+def _store_residence_choice(answers: dict[str, Any], value: Any, lang: str) -> dict[str, Any]:
+    updated = {**answers, "residence_choice": value}
+    if value == "other":
+        return updated
+    labels = _countries()[str(value)]["labels"]
+    return {
+        **updated,
+        "residence_country": value,
+        "location": labels.get(lang, labels["ru"]),
+    }
+
+
+def _store_free_text_residence(answers: dict[str, Any], value: Any, _lang: str) -> dict[str, Any]:
+    return {
+        **answers,
+        "location": value,
+        "residence_country": _resolve_country_code(str(value)),
+    }
+
+
 QUESTIONS = [
     Question(
-        "citizenship",
+        "ukrainian_citizen",
         "single",
         "onboarding_q_ua_citizen",
         _gate_options,
+        store=_store_ukrainian_citizenship,
+        ineligible_value="no",
     ),
-    Question("location", "single", "onboarding_q_country", _country_options),
+    Question(
+        "residence_choice",
+        "single",
+        "onboarding_q_country",
+        _country_options,
+        store=_store_residence_choice,
+        completes_residence=True,
+    ),
     Question(
         "location",
         "text",
         "onboarding_q_country_other",
         applies=lambda answers: answers.get("residence_choice") == "other",
+        store=_store_free_text_residence,
+        completes_residence=True,
     ),
     Question(
         "languages",
@@ -123,7 +190,6 @@ QUESTIONS = [
     Question("unwanted", "text", "onboarding_q_unwanted"),
     Question("context", "text", "onboarding_q_context"),
 ]
-CONFIRM_STEP = len(QUESTIONS)
 
 
 async def handle_invited_update(
@@ -198,7 +264,7 @@ async def _handle_callback(
         return
     acknowledgement = "✓"
     try:
-        if data == "onb:confirm:yes" and state.step == CONFIRM_STEP:
+        if data == "onb:confirm:yes" and state.step == len(QUESTIONS):
             profile = Profile.model_validate(state.answers["profile"])
             user.profile, user.enabled, user.updated_at = (
                 profile.model_dump(mode="json"),
@@ -259,7 +325,7 @@ async def _handle_callback(
         if value not in allowed:
             acknowledgement = t("onboarding_invalid", user.ui_language)
             return
-        if state.step == 0 and value == "no":
+        if question.ineligible_value is not None and value == question.ineligible_value:
             session.add(UIEvent(chat_id=state.chat_id, action="onboarding_ineligible"))
             await session.delete(state)
             await session.flush()
@@ -302,20 +368,8 @@ async def _advance(
 ) -> None:
     answered_step = state.step
     question = QUESTIONS[answered_step]
-    answers = dict(state.answers)
-    if answered_step == 0:
-        answers[question.answer_key] = "Ukraine"
-    elif answered_step == 1:
-        answers["residence_choice"] = value
-        if value != "other":
-            answers["residence_country"] = value
-            labels = _countries()[str(value)]["labels"]
-            answers["location"] = labels.get(user.ui_language, labels["ru"])
-    elif answered_step == 2:
-        answers["location"] = value
-        answers["residence_country"] = _resolve_country_code(str(value))
-    else:
-        answers[question.answer_key] = value
+    store = question.store or _store_answer(question.answer_key)
+    answers = store(dict(state.answers), value, user.ui_language)
     state.answers = answers
     state.step = _next_applicable(answered_step + 1, answers)
     state.updated_at = datetime.now(UTC)
@@ -327,10 +381,8 @@ async def _advance(
         )
     )
     await session.flush()
-    residence_was_completed = answered_step == 2 or (
-        answered_step == 1 and answers.get("residence_choice") != "other"
-    )
-    if residence_was_completed and not _has_legal_options(answers):
+    residence_was_completed = question.completes_residence and "residence_country" in answers
+    if residence_was_completed and not _has_residence_coverage(answers):
         await client.send_message(
             state.chat_id, t("onboarding_unsupported_country", user.ui_language)
         )
@@ -364,7 +416,7 @@ async def _send_current_question(
         return
     profile = await synthesize_profile(settings, llm, state.answers)
     state.answers = {**state.answers, "profile": profile.model_dump(mode="json")}
-    state.step = CONFIRM_STEP
+    state.step = len(QUESTIONS)
     await session.flush()
     summary = t("onboarding_summary", user.ui_language).format(
         location=escape(profile.location),

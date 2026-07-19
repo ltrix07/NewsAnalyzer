@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import delivery.onboarding as onboarding
 from delivery.listener.handlers import handle_update
 from engine.config import get_settings
 from engine.models import DigestFeedback, OnboardingState, UIEvent, User
@@ -380,3 +381,120 @@ async def test_spain_skips_legal_status_and_synthesizes_correct_profile(
     assert state.answers["profile"]["location"] == "Spain"
     assert state.answers["profile"]["residence_country"] == "ES"
     assert state.answers["profile"]["interests"] == ["Spanish immigration rules"]
+
+
+@pytest.mark.asyncio
+async def test_question_inserted_at_front_does_not_change_profile_answers(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chat_id = 7009
+    user = User(
+        username="inserted",
+        chat_id=chat_id,
+        profile=None,
+        enabled=False,
+        ui_language="en",
+    )
+    db_session.add(user)
+    await db_session.flush()
+    client = FakeTelegramClient()
+    questions = [
+        onboarding.Question(
+            "inserted",
+            "single",
+            "onboarding_q_context",
+            lambda _answers, _lang: [("new-answer", "New answer")],
+        ),
+        *onboarding.QUESTIONS,
+    ]
+    monkeypatch.setattr(onboarding, "QUESTIONS", questions)
+
+    async def fake_synthesize(_settings: Any, _llm: Any, answers: dict[str, Any]) -> Profile:
+        return Profile(
+            name=str(answers["name"]),
+            location=str(answers["location"]),
+            residence_country=str(answers["residence_country"]),
+            citizenship=str(answers["citizenship"]),
+            languages=list(answers["languages"]),
+            output_language=str(answers["output_language"]),
+            interests=[str(answers["wanted"])],
+            not_interested=[str(answers["unwanted"])],
+            keyword_rules=KeywordRules(),
+        )
+
+    monkeypatch.setattr(onboarding, "synthesize_profile", fake_synthesize)
+
+    async def send(update: dict[str, Any]) -> None:
+        await handle_update(
+            session=db_session,
+            settings=get_settings(),
+            telegram_client=client,  # type: ignore[arg-type]
+            llm_client=object(),  # type: ignore[arg-type]
+            update=update,
+        )
+
+    await send(_message(chat_id, "/start"))
+    await send(_callback(chat_id, "onb:0:new-answer"))
+    for data in (
+        "onb:1:yes",
+        "onb:2:PL",
+        "onb:4:uk",
+        "onb:4:en",
+        "onb:4:done",
+        "onb:5:en",
+        "onb:6:IT",
+        "onb:7:karta pobytu",
+    ):
+        await send(_callback(chat_id, data))
+    await send(_message(chat_id, "AI regulation"))
+    await send(_message(chat_id, "celebrity gossip"))
+    await send(_message(chat_id, "Warsaw"))
+
+    state = await db_session.get(OnboardingState, chat_id)
+    assert state is not None
+    assert state.answers["inserted"] == "new-answer"
+    assert state.answers["profile"] == {
+        "name": "Ada",
+        "location": "Poland",
+        "residence_country": "PL",
+        "citizenship": "Ukraine",
+        "languages": ["uk", "en"],
+        "output_language": "en",
+        "interests": ["AI regulation"],
+        "not_interested": ["celebrity gossip"],
+        "keyword_rules": {"keep_if_matches": [], "drop_if_matches": []},
+    }
+
+
+@pytest.mark.asyncio
+async def test_country_with_legal_options_but_no_sources_gets_coverage_notice(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chat_id = 7010
+    db_session.add(
+        User(username="germany", chat_id=chat_id, profile=None, enabled=False, ui_language="en")
+    )
+    db_session.add(
+        OnboardingState(
+            chat_id=chat_id,
+            step=1,
+            answers={"name": "Ada", "citizenship": "Ukraine"},
+        )
+    )
+    await db_session.flush()
+    countries = {code: dict(data) for code, data in onboarding._countries().items()}
+    countries["DE"]["legal_status_options"] = [["permit", "Residence permit"]]
+    monkeypatch.setattr(onboarding, "_countries", lambda: countries)
+    client = FakeTelegramClient()
+
+    await handle_update(
+        session=db_session,
+        settings=get_settings(),
+        telegram_client=client,  # type: ignore[arg-type]
+        llm_client=object(),  # type: ignore[arg-type]
+        update=_callback(chat_id, "onb:1:DE"),
+    )
+
+    assert onboarding._has_legal_options({"residence_country": "DE"}) is True
+    assert onboarding._has_residence_coverage({"residence_country": "DE"}) is False
+    assert any("are not available yet" in text for _chat, text, _markup in client.messages)

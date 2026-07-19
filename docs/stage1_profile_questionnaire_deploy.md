@@ -6,3 +6,5 @@
 - Before deploying the rewritten question order, delete all rows from `onboarding_state`. Their integer
   steps refer to the old questionnaire and cannot be migrated safely. Users can restart with `/start`.
 - `config/profiles/volodymyr.yaml` is explicitly annotated with `residence_country: PL`.
+- Restart the listener after changing `config/countries.yaml` or `config/sources.yaml`; onboarding
+  caches both registries for the lifetime of the process.
