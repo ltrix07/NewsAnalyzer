@@ -38,6 +38,7 @@ async def add_user_command(
 
     _validate_username(username)
     profile = load_profile(profile_path.stem, profile_path.parent)
+    settings = get_settings()
     async with session_scope() as session:
         if await get_user_by_username(username, session) is not None:
             raise ValueError(f"User '{username}' already exists.")
@@ -49,6 +50,7 @@ async def add_user_command(
                 chat_id=chat_id,
                 profile=profile.model_dump(mode="json"),
                 ui_language=ui_language,
+                timezone=settings.default_timezone,
             )
         )
 
@@ -76,6 +78,7 @@ async def invite_user_command(*, username: str, chat_id: int, ui_language: str) 
     """Insert an invited, inactive user without a synthesized profile."""
 
     _validate_username(username)
+    settings = get_settings()
     async with session_scope() as session:
         if await get_user_by_username(username, session) is not None:
             raise ValueError(f"User '{username}' already exists.")
@@ -88,6 +91,7 @@ async def invite_user_command(*, username: str, chat_id: int, ui_language: str) 
                 profile=None,
                 ui_language=ui_language,
                 enabled=False,
+                timezone=settings.default_timezone,
             )
         )
 
@@ -179,6 +183,7 @@ async def seed_self_command() -> None:
                     chat_id=chat_id,
                     profile=profile.model_dump(mode="json"),
                     ui_language=settings.ui_language,
+                    timezone=settings.default_timezone,
                 )
             )
         else:

@@ -7,15 +7,17 @@ valid across later schema changes.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pgvector.sqlalchemy import Vector  # type: ignore[import-untyped]
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -30,7 +32,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from engine.db import Base
 
@@ -85,6 +87,13 @@ class User(Base):
     ui_language: Mapped[str] = mapped_column(
         String, nullable=False, default="ru", server_default=text("'ru'")
     )
+    timezone: Mapped[str] = mapped_column(
+        String, nullable=False, default="Europe/Warsaw", server_default=text("'Europe/Warsaw'")
+    )
+    delivery_slot: Mapped[str] = mapped_column(
+        String, nullable=False, default="morning", server_default=text("'morning'")
+    )
+    last_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     enabled: Mapped[bool] = mapped_column(nullable=False, default=True, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
@@ -92,6 +101,17 @@ class User(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
+
+    @validates("timezone")
+    def validate_timezone(self, _key: str, value: str) -> str:
+        """Reject invalid IANA timezone names at application write boundaries."""
+
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            msg = f"unknown timezone: {value}"
+            raise ValueError(msg) from exc
+        return value
 
 
 class Article(Base):

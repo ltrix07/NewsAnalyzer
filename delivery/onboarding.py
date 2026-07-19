@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
 from html import escape
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+import httpx
 import structlog
+import yaml  # type: ignore[import-untyped]
 from jinja2 import Template
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,59 +28,102 @@ from engine.profile import KeywordRules, Profile
 
 logger = structlog.get_logger(__name__)
 
-_BUTTON_QUESTIONS: dict[int, tuple[str, list[tuple[str, str]]]] = {
-    0: (
-        "onboarding_q_country",
-        [
-            ("Poland", "Poland / Польша"),
-            ("Ukraine", "Ukraine / Украина"),
-            ("other EU", "Other EU / Другая страна ЕС"),
-            ("other", "Other / Другое"),
-        ],
+QuestionKind = Literal["single", "multi", "text"]
+OptionsFactory = Callable[[dict[str, Any], str], list[tuple[str, str]]]
+Predicate = Callable[[dict[str, Any]], bool]
+
+
+@dataclass(frozen=True, slots=True)
+class Question:
+    answer_key: str
+    kind: QuestionKind
+    prompt_key: str
+    options: OptionsFactory | None = None
+    applies: Predicate = lambda _answers: True
+
+
+def _static_options(options: list[tuple[str, str]]) -> OptionsFactory:
+    return lambda _answers, _lang: options
+
+
+@lru_cache(maxsize=1)
+def _countries() -> dict[str, dict[str, Any]]:
+    path = Path(__file__).parents[1] / "config/countries.yaml"
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    countries = payload.get("countries") if isinstance(payload, dict) else None
+    if not isinstance(countries, dict):
+        msg = f"{path} must contain a countries mapping"
+        raise RuntimeError(msg)
+    return countries
+
+
+def _country_options(_answers: dict[str, Any], lang: str) -> list[tuple[str, str]]:
+    options = []
+    for code, data in _countries().items():
+        labels = data.get("labels", {})
+        options.append((code, str(labels.get(lang, labels.get("ru", code)))))
+    return [*options, ("other", t("onboarding_other_country", lang))]
+
+
+def _gate_options(_answers: dict[str, Any], lang: str) -> list[tuple[str, str]]:
+    return [("yes", t("onboarding_yes", lang)), ("no", t("onboarding_no", lang))]
+
+
+def _legal_options(answers: dict[str, Any], _lang: str) -> list[tuple[str, str]]:
+    country = _countries().get(str(answers.get("residence_country")), {})
+    return [(str(value), str(label)) for value, label in country.get("legal_status_options", [])]
+
+
+def _has_legal_options(answers: dict[str, Any]) -> bool:
+    return bool(_legal_options(answers, "ru"))
+
+
+QUESTIONS = [
+    Question(
+        "citizenship",
+        "single",
+        "onboarding_q_ua_citizen",
+        _gate_options,
     ),
-    1: (
-        "onboarding_q_citizenship",
-        [
-            ("Ukraine", "Ukraine / Украина"),
-            ("Poland", "Poland / Польша"),
-            ("other", "Other / Другое"),
-        ],
+    Question("location", "single", "onboarding_q_country", _country_options),
+    Question(
+        "location",
+        "text",
+        "onboarding_q_country_other",
+        applies=lambda answers: answers.get("residence_choice") == "other",
     ),
-    2: ("onboarding_q_languages", [("uk", "UA"), ("ru", "RU"), ("pl", "PL"), ("en", "EN")]),
-    3: ("onboarding_q_output", [("ru", "RU"), ("uk", "UK"), ("pl", "PL"), ("en", "EN")]),
-    4: (
+    Question(
+        "languages",
+        "multi",
+        "onboarding_q_languages",
+        _static_options([("uk", "UA"), ("ru", "RU"), ("pl", "PL"), ("en", "EN")]),
+    ),
+    Question(
+        "output_language",
+        "single",
+        "onboarding_q_output",
+        _static_options([("ru", "RU"), ("uk", "UK"), ("pl", "PL"), ("en", "EN")]),
+    ),
+    Question(
+        "occupation",
+        "single",
         "onboarding_q_occupation",
-        [
-            ("IT", "IT"),
-            ("finance-trading", "Finance / Trading"),
-            ("business-owner", "Business owner"),
-            ("student", "Student"),
-            ("other", "Other / Другое"),
-        ],
+        _static_options(
+            [
+                ("IT", "IT"),
+                ("finance-trading", "Finance / Trading"),
+                ("business-owner", "Business owner"),
+                ("student", "Student"),
+                ("other", "Other / Другое"),
+            ]
+        ),
     ),
-    5: (
-        "onboarding_q_legal",
-        [
-            ("work permit", "Work permit"),
-            ("karta pobytu", "Karta pobytu"),
-            ("studies", "Studies"),
-            ("citizen", "Citizen"),
-            ("n-a", "N/A / Пропустить"),
-        ],
-    ),
-}
-_TEXT_KEYS = {6: "onboarding_q_wanted", 7: "onboarding_q_unwanted", 8: "onboarding_q_context"}
-_ANSWER_KEYS = {
-    0: "location",
-    1: "citizenship",
-    2: "languages",
-    3: "output_language",
-    4: "occupation",
-    5: "pl_legal",
-    6: "wanted",
-    7: "unwanted",
-    8: "context",
-}
+    Question("legal_status", "single", "onboarding_q_legal", _legal_options, _has_legal_options),
+    Question("wanted", "text", "onboarding_q_wanted"),
+    Question("unwanted", "text", "onboarding_q_unwanted"),
+    Question("context", "text", "onboarding_q_context"),
+]
+CONFIRM_STEP = len(QUESTIONS)
 
 
 async def handle_invited_update(
@@ -93,7 +141,6 @@ async def handle_invited_update(
     if isinstance(message, dict) and message.get("text") == "/start":
         await _start(session, telegram_client, user, message)
         return
-
     state = await session.get(OnboardingState, user.chat_id)
     if state is None:
         return
@@ -127,9 +174,12 @@ async def _start(
     await client.send_message(
         user.chat_id,
         "\n\n".join(
-            (t("onboarding_welcome", user.ui_language), t("onboarding_q_country", user.ui_language))
+            (
+                t("onboarding_welcome", user.ui_language),
+                t(QUESTIONS[0].prompt_key, user.ui_language),
+            )
         ),
-        reply_markup=_keyboard(0, user.ui_language),
+        reply_markup=_keyboard(0, answers, user.ui_language),
     )
 
 
@@ -146,57 +196,79 @@ async def _handle_callback(
     callback_id = callback.get("id")
     if not isinstance(data, str) or not data.startswith("onb:"):
         return
-    if data == "onb:confirm:yes" and state.step == 9:
-        profile = Profile.model_validate(state.answers["profile"])
-        user.profile, user.enabled, user.updated_at = (
-            profile.model_dump(mode="json"),
-            True,
-            datetime.now(UTC),
-        )
-        session.add(UIEvent(chat_id=state.chat_id, action="onboarding_completed"))
-        await session.delete(state)
-        await session.flush()
-        if isinstance(callback_id, str):
-            await client.answer_callback_query(
-                callback_id, t("onboarding_confirm", user.ui_language)
+    acknowledgement = "✓"
+    try:
+        if data == "onb:confirm:yes" and state.step == CONFIRM_STEP:
+            profile = Profile.model_validate(state.answers["profile"])
+            user.profile, user.enabled, user.updated_at = (
+                profile.model_dump(mode="json"),
+                True,
+                datetime.now(UTC),
             )
-        await client.send_message(state.chat_id, t("onboarding_complete", user.ui_language))
-        return
-    parts = data.split(":", 2)
-    if (
-        len(parts) != 3
-        or not parts[1].isdigit()
-        or int(parts[1]) != state.step
-        or state.step not in _BUTTON_QUESTIONS
-    ):
-        return
-    value = parts[2]
-    allowed = {item[0] for item in _BUTTON_QUESTIONS[state.step][1]}
-    if state.step == 2:
-        selected = list(state.answers.get("languages", []))
-        if value == "done":
-            if not selected:
-                if isinstance(callback_id, str):
-                    await client.answer_callback_query(
-                        callback_id, t("onboarding_invalid", user.ui_language)
-                    )
+            session.add(UIEvent(chat_id=state.chat_id, action="onboarding_completed"))
+            await session.delete(state)
+            await session.flush()
+            acknowledgement = t("onboarding_confirm", user.ui_language)
+            await client.send_message(state.chat_id, t("onboarding_complete", user.ui_language))
+            return
+
+        parts = data.split(":", 2)
+        if len(parts) != 3 or not parts[1].isdigit() or int(parts[1]) != state.step:
+            acknowledgement = t("onboarding_stale", user.ui_language)
+            return
+        if state.step >= len(QUESTIONS):
+            acknowledgement = t("onboarding_invalid", user.ui_language)
+            return
+        question = QUESTIONS[state.step]
+        if question.kind == "text" or question.options is None:
+            acknowledgement = t("onboarding_invalid", user.ui_language)
+            return
+        value = parts[2]
+        allowed = {item[0] for item in question.options(state.answers, user.ui_language)}
+        if question.kind == "multi":
+            selected = list(state.answers.get(question.answer_key, []))
+            if value == "done":
+                if not selected:
+                    acknowledgement = t("onboarding_invalid", user.ui_language)
+                    return
+                await _advance(session, settings, client, llm, user, state, selected)
                 return
-            await _advance(session, settings, client, llm, user, state, selected)
-        elif value in allowed:
+            if value not in allowed:
+                acknowledgement = t("onboarding_invalid", user.ui_language)
+                return
             selected = (
                 [item for item in selected if item != value]
                 if value in selected
                 else [*selected, value]
             )
-            state.answers = {**state.answers, "languages": selected}
+            state.answers = {**state.answers, question.answer_key: selected}
             state.updated_at = datetime.now(UTC)
             await session.flush()
-        return
-    if value not in allowed:
-        return
-    await _advance(session, settings, client, llm, user, state, value)
-    if isinstance(callback_id, str):
-        await client.answer_callback_query(callback_id, "✓")
+            message = callback.get("message")
+            message_id = message.get("message_id") if isinstance(message, dict) else None
+            if isinstance(message_id, int):
+                try:
+                    await client.edit_message_reply_markup(
+                        state.chat_id,
+                        message_id,
+                        _keyboard(state.step, state.answers, user.ui_language, selected=selected),
+                    )
+                except (httpx.HTTPError, RuntimeError):
+                    logger.warning("onboarding_keyboard_repaint_failed", chat_id=state.chat_id)
+            return
+        if value not in allowed:
+            acknowledgement = t("onboarding_invalid", user.ui_language)
+            return
+        if state.step == 0 and value == "no":
+            session.add(UIEvent(chat_id=state.chat_id, action="onboarding_ineligible"))
+            await session.delete(state)
+            await session.flush()
+            await client.send_message(state.chat_id, t("onboarding_ineligible", user.ui_language))
+            return
+        await _advance(session, settings, client, llm, user, state, value)
+    finally:
+        if isinstance(callback_id, str):
+            await client.answer_callback_query(callback_id, acknowledgement)
 
 
 async def _handle_text(
@@ -209,7 +281,12 @@ async def _handle_text(
     message: dict[str, Any],
 ) -> None:
     text = message.get("text")
-    if state.step not in _TEXT_KEYS or not isinstance(text, str) or not text.strip():
+    if (
+        state.step >= len(QUESTIONS)
+        or QUESTIONS[state.step].kind != "text"
+        or not isinstance(text, str)
+        or not text.strip()
+    ):
         return
     await _advance(session, settings, client, llm, user, state, text.strip())
 
@@ -224,41 +301,94 @@ async def _advance(
     value: Any,
 ) -> None:
     answered_step = state.step
-    state.answers = {**state.answers, _ANSWER_KEYS[answered_step]: value}
-    state.step += 1
+    question = QUESTIONS[answered_step]
+    answers = dict(state.answers)
+    if answered_step == 0:
+        answers[question.answer_key] = "Ukraine"
+    elif answered_step == 1:
+        answers["residence_choice"] = value
+        if value != "other":
+            answers["residence_country"] = value
+            labels = _countries()[str(value)]["labels"]
+            answers["location"] = labels.get(user.ui_language, labels["ru"])
+    elif answered_step == 2:
+        answers["location"] = value
+        answers["residence_country"] = _resolve_country_code(str(value))
+    else:
+        answers[question.answer_key] = value
+    state.answers = answers
+    state.step = _next_applicable(answered_step + 1, answers)
     state.updated_at = datetime.now(UTC)
     session.add(
         UIEvent(
-            chat_id=state.chat_id, action="onboarding_step", context={"step": answered_step + 1}
+            chat_id=state.chat_id,
+            action="onboarding_step",
+            context={"step": answered_step + 1, "answer_key": question.answer_key},
         )
     )
     await session.flush()
-    if state.step <= 5:
+    residence_was_completed = answered_step == 2 or (
+        answered_step == 1 and answers.get("residence_choice") != "other"
+    )
+    if residence_was_completed and not _has_legal_options(answers):
         await client.send_message(
-            state.chat_id,
-            t(_BUTTON_QUESTIONS[state.step][0], user.ui_language),
-            reply_markup=_keyboard(state.step, user.ui_language),
+            state.chat_id, t("onboarding_unsupported_country", user.ui_language)
         )
-    elif state.step <= 8:
-        await client.send_message(state.chat_id, t(_TEXT_KEYS[state.step], user.ui_language))
-    else:
-        profile = await synthesize_profile(settings, llm, state.answers)
-        state.answers = {**state.answers, "profile": profile.model_dump(mode="json")}
-        state.step = 9
-        await session.flush()
-        summary = t("onboarding_summary", user.ui_language).format(
-            location=escape(profile.location),
-            citizenship=escape(profile.citizenship),
-            languages=escape(", ".join(profile.languages)),
-            output_language=escape(profile.output_language),
-            interests=escape(", ".join(profile.interests) or "—"),
-            not_interested=escape(", ".join(profile.not_interested) or "—"),
+    await _send_current_question(session, settings, client, llm, user, state)
+
+
+def _next_applicable(step: int, answers: dict[str, Any]) -> int:
+    while step < len(QUESTIONS) and not QUESTIONS[step].applies(answers):
+        step += 1
+    return step
+
+
+async def _send_current_question(
+    session: AsyncSession,
+    settings: Settings,
+    client: TelegramBotClient,
+    llm: LLMClient,
+    user: User,
+    state: OnboardingState,
+) -> None:
+    if state.step < len(QUESTIONS):
+        question = QUESTIONS[state.step]
+        markup = (
+            _keyboard(state.step, state.answers, user.ui_language)
+            if question.kind != "text"
+            else None
         )
         await client.send_message(
-            state.chat_id,
-            summary,
-            reply_markup=build_onboarding_confirm_keyboard(lang=user.ui_language),
+            state.chat_id, t(question.prompt_key, user.ui_language), reply_markup=markup
         )
+        return
+    profile = await synthesize_profile(settings, llm, state.answers)
+    state.answers = {**state.answers, "profile": profile.model_dump(mode="json")}
+    state.step = CONFIRM_STEP
+    await session.flush()
+    summary = t("onboarding_summary", user.ui_language).format(
+        location=escape(profile.location),
+        citizenship=escape(profile.citizenship),
+        languages=escape(", ".join(profile.languages)),
+        output_language=escape(profile.output_language),
+        interests=escape(", ".join(profile.interests) or "—"),
+        not_interested=escape(", ".join(profile.not_interested) or "—"),
+    )
+    await client.send_message(
+        state.chat_id,
+        summary,
+        reply_markup=build_onboarding_confirm_keyboard(lang=user.ui_language),
+    )
+
+
+def _resolve_country_code(location: str) -> str:
+    normalized = location.strip().casefold()
+    for code, data in _countries().items():
+        aliases = [str(item).casefold() for item in data.get("aliases", [])]
+        labels = [str(item).casefold() for item in data.get("labels", {}).values()]
+        if normalized == code.casefold() or normalized in aliases or normalized in labels:
+            return code
+    return "ZZ"
 
 
 async def synthesize_profile(
@@ -269,6 +399,7 @@ async def synthesize_profile(
     deterministic = dict(
         name=str(answers["name"]),
         location=str(answers["location"]),
+        residence_country=str(answers["residence_country"]),
         citizenship=str(answers["citizenship"]),
         languages=list(answers["languages"]),
         output_language=str(answers["output_language"]),
@@ -294,6 +425,7 @@ async def synthesize_profile(
         return Profile(
             name=str(answers["name"]),
             location=str(answers["location"]),
+            residence_country=str(answers["residence_country"]),
             citizenship=str(answers["citizenship"]),
             languages=[str(item) for item in answers["languages"]],
             output_language=str(answers["output_language"]),
@@ -303,5 +435,19 @@ async def synthesize_profile(
         )
 
 
-def _keyboard(step: int, lang: str) -> dict[str, list[list[dict[str, str]]]]:
-    return build_onboarding_keyboard(step, _BUTTON_QUESTIONS[step][1], lang=lang, done=step == 2)
+def _keyboard(
+    step: int,
+    answers: dict[str, Any],
+    lang: str,
+    *,
+    selected: list[str] | None = None,
+) -> dict[str, list[list[dict[str, str]]]]:
+    question = QUESTIONS[step]
+    assert question.options is not None
+    return build_onboarding_keyboard(
+        step,
+        question.options(answers, lang),
+        lang=lang,
+        done=question.kind == "multi",
+        selected=selected,
+    )

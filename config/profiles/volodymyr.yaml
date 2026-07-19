@@ -1,6 +1,7 @@
 profile:
   name: volodymyr
   location: "PL (Warsaw)"
+  residence_country: PL
   citizenship: UA
   languages: [ru, uk, pl, en]
   output_language: ru

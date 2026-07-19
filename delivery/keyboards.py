@@ -219,17 +219,33 @@ def build_research_keyboard(
 
 
 def build_onboarding_keyboard(
-    step: int, options: list[tuple[str, str]], *, lang: str = "ru", done: bool = False
+    step: int,
+    options: list[tuple[str, str]],
+    *,
+    lang: str = "ru",
+    done: bool = False,
+    selected: list[str] | None = None,
 ) -> dict[str, list[list[dict[str, str]]]]:
     """Build a compact one-button-per-row onboarding keyboard."""
 
+    selected_values = set(selected or [])
     rows = [
-        [{"text": label, "callback_data": _validate_callback_data(f"onb:{step}:{value}")}]
+        [
+            {
+                "text": f"✅ {label}" if value in selected_values else label,
+                "callback_data": _validate_callback_data(f"onb:{step}:{value}"),
+            }
+        ]
         for value, label in options
     ]
     if done:
         rows.append(
-            [{"text": t("onboarding_languages_done", lang), "callback_data": f"onb:{step}:done"}]
+            [
+                {
+                    "text": t("onboarding_languages_done", lang),
+                    "callback_data": _validate_callback_data(f"onb:{step}:done"),
+                }
+            ]
         )
     return {"inline_keyboard": rows}
 

@@ -1,0 +1,33 @@
+# ISO 3166-1 alpha-2 codes match sources.country. Empty legal_status_options means
+# the residence tier is not supported yet. ZZ is the sentinel for unrecognized free text.
+countries:
+  PL:
+    labels: {ru: "Польша", en: "Poland"}
+    aliases: [poland, polska, польша]
+    legal_status_options:
+      - ["work permit", "Work permit"]
+      - ["karta pobytu", "Karta pobytu"]
+      - ["studies", "Studies"]
+      - ["citizen", "Citizen"]
+      - ["n-a", "N/A / Пропустить"]
+    residence_prompt_slots: {}
+  DE:
+    labels: {ru: "Германия", en: "Germany"}
+    aliases: [germany, deutschland, германия]
+    legal_status_options: []
+    residence_prompt_slots: {}
+  CZ:
+    labels: {ru: "Чехия", en: "Czechia"}
+    aliases: [czechia, "czech republic", česko, чехия]
+    legal_status_options: []
+    residence_prompt_slots: {}
+  IT:
+    labels: {ru: "Италия", en: "Italy"}
+    aliases: [italy, italia, италия]
+    legal_status_options: []
+    residence_prompt_slots: {}
+  ES:
+    labels: {ru: "Испания", en: "Spain"}
+    aliases: [spain, españa, испания]
+    legal_status_options: []
+    residence_prompt_slots: {}

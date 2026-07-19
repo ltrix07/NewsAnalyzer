@@ -38,6 +38,18 @@ async def test_profile_round_trip_matches_yaml(db_session: AsyncSession) -> None
 
 
 @pytest.mark.asyncio
+async def test_resolve_legacy_profile_without_residence_country(db_session: AsyncSession) -> None:
+    profile = load_profile("volodymyr", Path("config/profiles")).model_dump(mode="json")
+    profile.pop("residence_country")
+    db_session.add(User(username="legacy", profile=profile))
+    await db_session.flush()
+
+    resolved = await resolve_profile("legacy", db_session)
+
+    assert resolved.residence_country is None
+
+
+@pytest.mark.asyncio
 async def test_resolve_unknown_profile_is_clear(db_session: AsyncSession) -> None:
     with pytest.raises(LookupError, match="missing.*does not exist"):
         await resolve_profile("missing", db_session)

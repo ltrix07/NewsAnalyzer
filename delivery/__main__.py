@@ -7,7 +7,7 @@ import asyncio
 import typer
 from sqlalchemy import select
 
-from delivery.dispatcher import deliver_pending, send_test_message
+from delivery.dispatcher import deliver_due, deliver_pending, send_test_message
 from engine.config import get_settings
 from engine.db import session_scope
 from engine.models import Digest
@@ -47,6 +47,14 @@ def test_command() -> None:
 
     asyncio.run(send_test_message())
     typer.echo("test message sent")
+
+
+@app.command("send-due")
+def send_due_command() -> None:
+    """Send pending digests for users whose local delivery slot has passed."""
+
+    report = asyncio.run(deliver_due())
+    typer.echo(f"sent={report.sent} failed={report.failed} skipped={report.skipped}")
 
 
 @app.command("list")

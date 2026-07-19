@@ -3,11 +3,11 @@
 Operator runbook for shipping the 9-feature stack to the server and going live with ~30 beta users.
 Run top to bottom. Each phase has a **verify** step — do not proceed until it passes.
 
-Server: project at `/root/NewsAnalyzer/`. Pipeline cron `30 7 * * *` → `news-pipeline.sh`
-(`engine run` then `delivery send`). Listener is systemd `newsanalyzer-listener.service`
+Server: project at `/root/NewsAnalyzer/`. Collection and delivery use separate cron entries described
+in Phase 4. Listener is systemd `newsanalyzer-listener.service`
 (long-running — **must be restarted** to pick up new code/env).
 
-Migration head after this stack: **`e9f0a1b2c3d4`**.
+Migration head after this stack: **`1a2b3c4d5e6f`**.
 
 Everything new is behind a flag or gated on user state; with flags off and no invited users, behavior
 is identical to today. Turn features on **one at a time**.
@@ -28,12 +28,13 @@ is identical to today. Turn features on **one at a time**.
 - [ ] Pull/checkout the bundled branch on the server.
 - [ ] Install deps: `cd /root/NewsAnalyzer && uv sync`.
 - [ ] **Do not restart the listener yet** and **do not run the cron** until migrations are applied
-      (new code against old schema will error).
+      (new code against old schema will error). Confirm the server clock configuration with
+      `timedatectl`; the cron below declares UTC explicitly and therefore does not depend on it.
 
 ## Phase 2 — Migrations
 
 - [ ] `cd /root/NewsAnalyzer && uv run alembic upgrade head`
-- [ ] **Verify:** `uv run alembic current` shows `e9f0a1b2c3d4`.
+- [ ] **Verify:** `uv run alembic current` shows `1a2b3c4d5e6f`.
 - [ ] **Verify** the new tables exist (no error): the stack adds `digest_links`, `link_clicks`,
       `ui_events`, `delivery_batches`, `onboarding_state`, `users`, plus columns on `sources`,
       `digests`, `decisions`. A quick check: `uv run python -m engine users list` should run without a
@@ -50,6 +51,19 @@ changes for you.
       `uv run python -m engine users list` shows one enabled user with your chat_id.
 
 ## Phase 4 — Restart listener on new code (still single-user, flags off)
+
+- [ ] Split `news-pipeline.sh`: it must run `uv run python -m engine run` only. Remove its old
+      unconditional `delivery send`; scheduled delivery is now the separate hourly command below.
+- [ ] Restore and uncomment both cron jobs, declaring their timezone explicitly:
+      ```cron
+      CRON_TZ=UTC
+      30 3 * * * cd /root/NewsAnalyzer && ./news-pipeline.sh
+      0 * * * * cd /root/NewsAnalyzer && uv run python -m delivery send-due
+      ```
+      The server timezone was previously undocumented, so `CRON_TZ=UTC` makes the schedule
+      unambiguous. The supported cohort reaches UTC+3. Budgeting two hours for a 03:30 UTC collection
+      gives a 05:30 UTC finish; the earliest 09:00 local slot is 06:00 UTC at UTC+3, leaving a
+      30-minute margin (`09:00 - 03:00 = 06:00 >= 05:30`).
 
 - [ ] `systemctl restart newsanalyzer-listener.service && systemctl is-active newsanalyzer-listener.service`
 - [ ] **Verify:** send yourself a like/dislike on an existing digest — feedback still acks. Check the
@@ -141,11 +155,8 @@ Caddy yet, **leave `LINK_TRACKING_ENABLED=false`** and come back — delivery wo
 
 - [ ] **Rotate the Telegram bot token** via @BotFather if the current one ever appeared on camera or in
       shared logs. Update `.env`, restart the listener.
-- [ ] **The bot token leaks into logs.** `delivery send` logs `POST
-      https://api.telegram.org/bot<TOKEN>/sendMessage` via httpx to stdout and to
-      `/root/NewsAnalyzer/logs/*.log`. Before onboarding real users, silence httpx: raise the
-      `httpx`/`httpcore` loggers to WARNING in `engine/observability.py` (offered earlier — say the word
-      and I'll write the brief). Until then, never paste `delivery send` output anywhere.
+- [ ] Verify delivery logs no longer contain Telegram request URLs. The application now raises the
+      `httpx` and `httpcore` loggers to WARNING; rotate the bot token if older logs exposed it.
 - [ ] `.env` holds live secrets — never `cat`/print it; the one-liners above only append and grep by
       key.
 

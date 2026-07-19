@@ -37,6 +37,8 @@ def configure_logging(settings: Settings) -> None:
     # fragments. These are expected and handled by the ingest stage fallback.
     for noisy in ("trafilatura", "trafilatura.utils", "trafilatura.htmlprocessing", "htmldate"):
         logging.getLogger(noisy).setLevel(logging.ERROR)
+    for sensitive in ("httpx", "httpcore"):
+        logging.getLogger(sensitive).setLevel(logging.WARNING)
 
     structlog.configure(
         processors=[

@@ -22,6 +22,9 @@ class Profile(BaseModel):
 
     name: str
     location: str
+    # None keeps profiles created before structured residence data backward compatible.
+    # "ZZ" is used by onboarding for an unrecognized free-text country.
+    residence_country: str | None = None
     citizenship: str
     languages: list[str]
     output_language: str

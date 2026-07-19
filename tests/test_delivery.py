@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -13,13 +13,13 @@ from uuid import uuid4
 import httpx
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import engine._retry as retry_module
 from delivery import client as delivery_client
 from delivery.discussion import DiscussionAnswer, render_discussion_prompt
-from delivery.dispatcher import deliver_pending, reveal_batch_page
+from delivery.dispatcher import deliver_due, deliver_pending, reveal_batch_page
 from delivery.formatter import MAX_TELEGRAM_MESSAGE_LENGTH, format_digest
 from delivery.keyboards import (
     build_digest_keyboard,
@@ -124,8 +124,7 @@ async def test_multiuser_delivery_isolated_by_profile_chat_language_and_failure(
 
     assert report.sent == 2
     routed_headlines = [
-        (chat_id, "Russian digest" in text, "English digest" in text)
-        for chat_id, text, _ in calls
+        (chat_id, "Russian digest" in text, "English digest" in text) for chat_id, text, _ in calls
     ]
     assert routed_headlines == [
         (222222, False, True),
@@ -760,6 +759,133 @@ async def test_batched_delivery_notifies_without_revealing(
         build_reveal_callback(batch.id)
     )
     assert await db_session.scalar(select(func.count()).select_from(Impression)) == 0
+
+
+@pytest.mark.asyncio
+async def test_due_tick_with_batching_notifies_once_and_records_local_date(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = await db_session.scalar(select(User).where(User.username == "volodymyr"))
+    assert user is not None
+    user.timezone = "Pacific/Auckland"
+    user.delivery_slot = "morning"
+    event = await _create_event(db_session)
+    await _create_digest_row(db_session, event_id=event.id, headline="Scheduled")
+    client = _RecordingTelegramClient()
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "batched_delivery_enabled", True)
+    monkeypatch.setattr(settings, "thread_updates_enabled", False)
+    monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
+    instant = datetime(2026, 1, 10, 22, 30, tzinfo=UTC)  # Jan 11, 11:30 in Auckland.
+
+    first = await deliver_due(now=instant, client=client)
+    second = await deliver_due(now=instant + timedelta(hours=1), client=client)
+
+    assert first.sent == 0 and first.failed == 0
+    assert second.sent == 0 and second.skipped == 1
+    assert user.last_delivery_date == date(2026, 1, 11)
+    assert len(client.calls) == 1
+    assert t("batch_notification", user.ui_language).split("{")[0] in client.calls[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_due_tick_retries_only_digest_that_failed(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = await db_session.scalar(select(User).where(User.username == "volodymyr"))
+    assert user is not None
+    user.delivery_slot = "morning"
+    digests: list[Digest] = []
+    for headline in ("First", "Retry me", "Third"):
+        event = await _create_event(db_session)
+        digests.append(await _create_digest_row(db_session, event_id=event.id, headline=headline))
+
+    class FailOnceClient(_RecordingTelegramClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failed_once = False
+
+        async def send_message(self, chat_id: int, text: str, **kwargs: Any) -> dict[str, Any]:
+            if "Retry me" in text and not self.failed_once:
+                self.failed_once = True
+                raise RuntimeError("temporary Telegram failure")
+            return await super().send_message(chat_id, text, **kwargs)
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "batched_delivery_enabled", False)
+    monkeypatch.setattr(settings, "thread_updates_enabled", False)
+    monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
+    instant = datetime(2026, 1, 10, 10, 0, tzinfo=UTC)
+    client = FailOnceClient()
+
+    first = await deliver_due(now=instant, client=client)
+
+    assert first.sent == 2 and first.failed == 1
+    assert [digest.delivered_at is not None for digest in digests] == [True, False, True]
+    assert user.last_delivery_date is None
+
+    second = await deliver_due(now=instant + timedelta(hours=1), client=client)
+
+    assert second.sent == 1 and second.failed == 0
+    assert all(digest.delivered_at is not None for digest in digests)
+    assert user.last_delivery_date == date(2026, 1, 10)
+    assert len(client.calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_invalid_timezone_does_not_block_later_user(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = await db_session.scalar(select(User).where(User.username == "volodymyr"))
+    assert primary is not None
+    malformed = User(
+        username="aaa_malformed",
+        chat_id=222222,
+        profile=primary.profile,
+        timezone="Europe/Warsaw",
+    )
+    db_session.add(malformed)
+    event = await _create_event(db_session)
+    digest = await _create_digest_row(db_session, event_id=event.id, headline="Still delivered")
+    await db_session.flush()
+    await db_session.execute(
+        update(User)
+        .where(User.id == malformed.id)
+        .values(timezone="Mars/Olympus_Mons")
+        .execution_options(synchronize_session=False)
+    )
+    db_session.expunge(malformed)
+    client = _RecordingTelegramClient()
+
+    @asynccontextmanager
+    async def fake_session_scope() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    settings = delivery_client.get_settings()
+    monkeypatch.setattr(settings, "batched_delivery_enabled", False)
+    monkeypatch.setattr(settings, "thread_updates_enabled", False)
+    monkeypatch.setattr("delivery.dispatcher.session_scope", fake_session_scope)
+
+    report = await deliver_due(
+        now=datetime(2026, 1, 10, 10, 0, tzinfo=UTC),
+        client=client,
+    )
+
+    assert report.sent == 1 and report.failed == 1
+    assert digest.delivered_at is not None
+    assert [call["chat_id"] for call in client.calls] == [primary.chat_id]
 
 
 @pytest.mark.asyncio

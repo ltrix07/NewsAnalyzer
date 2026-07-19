@@ -20,6 +20,7 @@ from delivery.keyboards import (
     build_reveal_keyboard,
     build_reveal_more_keyboard,
 )
+from delivery.schedule import is_user_due, local_delivery_date, utc_now
 from delivery.strings import t
 from engine.config import Settings, get_settings
 from engine.consolidation_match import Adjudicator, default_adjudicator
@@ -289,9 +290,7 @@ async def reveal_digest(
     message = await format_digest(digest, session, link_urls)
     reply_markup = build_digest_keyboard(digest_model.id, lang=ui_language)
     if parent is not None:
-        header = (
-            f"{t('thread_update_header', ui_language)}{html.escape(parent.headline)}\n\n"
-        )
+        header = f"{t('thread_update_header', ui_language)}{html.escape(parent.headline)}\n\n"
         try:
             response = await client.send_message(
                 chat_id,
@@ -432,9 +431,7 @@ async def reveal_batch_page(
                 await client.send_message(
                     chat_id,
                     t("btn_show_more", language).format(count=remaining),
-                    reply_markup=build_reveal_more_keyboard(
-                        batch_id, remaining, lang=language
-                    ),
+                    reply_markup=build_reveal_more_keyboard(batch_id, remaining, lang=language),
                 )
             except Exception:
                 logger.exception("batch_reveal_more_failed", batch_id=batch_id)
@@ -468,9 +465,7 @@ async def _deliver_for_user(
         return
     sent_before = report.sent
     failed_before = report.failed
-    digests = list(
-        (await session.scalars(_pending_digests_query(user.username, limit))).all()
-    )
+    digests = list((await session.scalars(_pending_digests_query(user.username, limit))).all())
     ranked = await _rank_pending_digests(session, digests, settings, user.chat_id)
     open_batch: DeliveryBatch | None = None
     batch_gained = False
@@ -588,6 +583,56 @@ async def deliver_pending(
             except Exception:
                 await session.rollback()
                 logger.exception("user_delivery_failed", username=user.username)
+
+    return report
+
+
+async def deliver_due(
+    *,
+    now: datetime | None = None,
+    client: TelegramBotClient | None = None,
+    adjudicator: Adjudicator | None = None,
+) -> DeliveryReport:
+    """Send pending digests only for users whose local slot has passed today."""
+
+    settings = get_settings()
+    resolved_client = client or _build_client()
+    resolved_adjudicator = adjudicator or default_adjudicator(settings)
+    report = DeliveryReport(sent=0, failed=0, skipped=0)
+    delivery_time = now or utc_now()
+
+    async with session_scope() as session:
+        users = await list_enabled_users(session)
+        for user in users:
+            username = user.username
+            try:
+                if user.chat_id is None or not is_user_due(user, delivery_time):
+                    report.skipped += 1
+                    continue
+            except Exception:
+                report.failed += 1
+                logger.exception("scheduled_user_delivery_failed", username=username)
+                continue
+
+            failed_before = report.failed
+            try:
+                await _deliver_for_user(
+                    session,
+                    user,
+                    resolved_client,
+                    resolved_adjudicator,
+                    settings,
+                    report,
+                    None,
+                )
+                if report.failed != failed_before:
+                    continue
+                user.last_delivery_date = local_delivery_date(user, delivery_time)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                report.failed += 1
+                logger.exception("scheduled_user_delivery_failed", username=username)
 
     return report
 

@@ -67,7 +67,28 @@ UI_STRINGS: dict[str, dict[str, str]] = {
         "ru": "Давайте настроим новости под вас.",
         "en": "Let's tailor the news to you.",
     },
+    "onboarding_q_ua_citizen": {
+        "ru": "Вы гражданин Украины?",
+        "en": "Are you a citizen of Ukraine?",
+    },
+    "onboarding_yes": {"ru": "Да", "en": "Yes"},
+    "onboarding_no": {"ru": "Нет", "en": "No"},
+    "onboarding_ineligible": {
+        "ru": "Пока этот сервис рассчитан только на граждан Украины, живущих в Европе.",
+        "en": "For now, this service is only for Ukrainian citizens living in Europe.",
+    },
     "onboarding_q_country": {"ru": "Где вы живёте?", "en": "Where do you live?"},
+    "onboarding_other_country": {"ru": "Другая", "en": "Other"},
+    "onboarding_q_country_other": {
+        "ru": "Напишите страну проживания.",
+        "en": "Type your country of residence.",
+    },
+    "onboarding_unsupported_country": {
+        "ru": ("Новости Украины вы будете получать. Местных источников для вашей страны пока нет."),
+        "en": (
+            "You will receive Ukrainian news. Local sources for your country are not available yet."
+        ),
+    },
     "onboarding_q_citizenship": {"ru": "Ваше гражданство?", "en": "What is your citizenship?"},
     "onboarding_q_languages": {
         "ru": "На каких языках вы читаете? Выберите все и нажмите «Готово».",
@@ -115,6 +136,10 @@ UI_STRINGS: dict[str, dict[str, str]] = {
     "onboarding_invalid": {
         "ru": "Пожалуйста, используйте кнопки под вопросом.",
         "en": "Please use the buttons below the question.",
+    },
+    "onboarding_stale": {
+        "ru": "Этот шаг уже пройден.",
+        "en": "This step has already been completed.",
     },
 }
 

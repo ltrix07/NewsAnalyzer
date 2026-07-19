@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     telegram_chat_id: int | None = None
     ui_language: Literal["ru", "en"] = "ru"
+    # TODO(stage-1): derive this from the user's residence-country configuration.
+    default_timezone: str = "Europe/Warsaw"
     raw_storage_path: Path = Path("raw")
     http_timeout_seconds: float = 30.0
     cluster_similarity_threshold: float = 0.82
