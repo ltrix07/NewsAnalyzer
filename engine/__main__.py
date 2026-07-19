@@ -8,6 +8,7 @@ from pathlib import Path
 import typer
 
 from engine.cli.cluster import cluster_command_sync_wrapper
+from engine.cli.compare_relevance import compare_relevance_sync_wrapper
 from engine.cli.consolidate import consolidate_command_sync_wrapper
 from engine.cli.cost import cost_command_sync_wrapper
 from engine.cli.digests import app as digests_app
@@ -74,6 +75,7 @@ app.command("ingest")(ingest_command_sync_wrapper)
 app.command("embed")(embed_command_sync_wrapper)
 app.command("cluster")(cluster_command_sync_wrapper)
 app.command("consolidate")(consolidate_command_sync_wrapper)
+app.command("compare-relevance")(compare_relevance_sync_wrapper)
 app.command("filter")(filter_command_sync_wrapper)
 app.command("run")(run_command_sync_wrapper)
 app.command("score")(score_command_sync_wrapper)

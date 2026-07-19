@@ -60,7 +60,7 @@ class Stage(ABC, Generic[TIn, TOut]):
     """Generic stage abstraction with decision logging around `process()`."""
 
     name: ClassVar[str]
-    version: ClassVar[str]
+    version: str
 
     @abstractmethod
     async def process(self, item: TIn, ctx: Context) -> StageResult[TOut]:

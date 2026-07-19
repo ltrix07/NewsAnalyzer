@@ -10,7 +10,16 @@ countries:
       - ["studies", "Studies"]
       - ["citizen", "Citizen"]
       - ["n-a", "N/A / Пропустить"]
-    residence_prompt_slots: {}
+    residence_prompt_slots:
+      residence_and_work_terms: ["karta pobytu", "work permit"]
+      migration_policy_terms: ["cudzoziemcy", "szybka ścieżka"]
+      central_bank: "NBP"
+      currency: "PLN"
+      financial_regulator: "KNF"
+      bilateral_topics:
+        - border / transit issues
+        - Polish military, financial, and humanitarian aid to Ukraine
+        - UPA / OUN / Wołyń historical-political disputes
   DE:
     labels: {ru: "Германия", en: "Germany"}
     aliases: [germany, deutschland, германия]

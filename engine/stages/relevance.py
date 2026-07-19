@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
+import yaml  # type: ignore[import-untyped]
+
 from engine.domain import Event as EventDTO
 from engine.domain import ScoredEvent as ScoredEventDTO
 from engine.llm.client import LLMClient
@@ -18,20 +24,35 @@ class RelevanceStage(Stage[EventDTO, ScoredEventDTO]):
     name = "relevance"
     version = "v3"
 
-    def __init__(self, llm_client: LLMClient, profile: Profile, model: str) -> None:
+    def __init__(
+        self,
+        llm_client: LLMClient,
+        profile: Profile,
+        model: str,
+        *,
+        use_v4: bool = False,
+    ) -> None:
         self.llm_client = llm_client
         self.profile = profile
         self.model = model
+        self.version = "v4" if use_v4 else "v3"
 
-    async def process(self, event: EventDTO, ctx: Context) -> StageResult[ScoredEventDTO]:
-        """Score one event for personal relevance."""
+    def render(self, articles: list[Any]) -> str:
+        """Render this stage's selected prompt without making an LLM call."""
 
-        articles = await load_event_articles(ctx.session, event.id)
-        rendered_prompt = render_prompt(
-            "relevance_v3.j2",
+        residence = _residence_context(self.profile.residence_country)
+        return render_prompt(
+            f"relevance_{self.version}.j2",
             profile=self.profile,
             articles=articles,
+            residence=residence,
         )
+
+    async def evaluate(self, event: EventDTO, ctx: Context) -> StageResult[ScoredEventDTO]:
+        """Evaluate an event without persisting a decision."""
+
+        articles = await load_event_articles(ctx.session, event.id)
+        rendered_prompt = self.render(articles)
         response = await self.llm_client.call_structured(
             model=self.model,
             system="You output only via the submit_verdict tool.",
@@ -58,3 +79,33 @@ class RelevanceStage(Stage[EventDTO, ScoredEventDTO]):
             draft=draft,
             cost_usd=float(response.usage.cost_usd),
         )
+
+    async def process(self, event: EventDTO, ctx: Context) -> StageResult[ScoredEventDTO]:
+        """Score one event for personal relevance."""
+
+        return await self.evaluate(event, ctx)
+
+
+@lru_cache(maxsize=1)
+def _country_registry() -> dict[str, dict[str, Any]]:
+    path = Path(__file__).resolve().parents[2] / "config/countries.yaml"
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    countries = payload.get("countries") if isinstance(payload, dict) else None
+    if not isinstance(countries, dict):
+        msg = f"{path} must contain a countries mapping"
+        raise RuntimeError(msg)
+    return countries
+
+
+def _residence_context(country_code: str | None) -> dict[str, Any] | None:
+    if country_code is None or country_code == "ZZ":
+        return None
+    country = _country_registry().get(country_code)
+    if country is None:
+        return None
+    labels = country.get("labels", {})
+    return {
+        "code": country_code,
+        "name": str(labels.get("en", country_code)),
+        "slots": country.get("residence_prompt_slots") or {},
+    }

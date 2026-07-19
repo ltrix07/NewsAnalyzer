@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     batch_nudge_after_days: int = 3
     redirect_base_url: str | None = None
     openai_model_relevance: str = "gpt-4o-mini"
+    relevance_v4_enabled: bool = False
     openai_model_consolidate: str = "gpt-4o-mini"
     openai_model_verify: str = "gpt-4o"
     openai_model_summarize: str = "gpt-4o"

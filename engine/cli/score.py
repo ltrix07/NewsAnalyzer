@@ -93,6 +93,7 @@ async def score_command(
             make_llm_client(settings),
             resolved_profile,
             model or settings.openai_model_relevance,
+            use_v4=settings.relevance_v4_enabled,
         )
         events = await load_score_candidates(
             session,

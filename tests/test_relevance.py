@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from engine.cli import compare_relevance
 from engine.config import get_settings
 from engine.domain import Event as EventDTO
 from engine.llm.client import LLMResponse, LLMUsage
 from engine.llm.schemas import RelevanceVerdict
 from engine.models import Article, Decision, Event, EventMember, Source
 from engine.profile import Profile
+from engine.stages._event_context import EventArticle
 from engine.stages.base import Context
 from engine.stages.relevance import RelevanceStage
 
@@ -79,11 +83,12 @@ async def _create_event_with_article(session: AsyncSession, suffix: str) -> Even
     return event
 
 
-def _profile() -> Profile:
+def _profile(residence_country: str | None = None, location: str = "PL (Warsaw)") -> Profile:
     return Profile.model_validate(
         {
             "name": "volodymyr",
-            "location": "PL (Warsaw)",
+            "location": location,
+            "residence_country": residence_country,
             "citizenship": "UA",
             "languages": ["ru", "en"],
             "output_language": "ru",
@@ -92,6 +97,138 @@ def _profile() -> Profile:
             "keyword_rules": {"keep_if_matches": [], "drop_if_matches": []},
         }
     )
+
+
+def _render_v4(profile: Profile) -> str:
+    stage = RelevanceStage(
+        FakeLLMClient(RelevanceVerdict(relevant=False, categories=[], why="test", confidence=1.0)),
+        profile,
+        "gpt-4o-mini",
+        use_v4=True,
+    )
+    return stage.render(
+        [
+            EventArticle(
+                source_name="source", title="title", url="https://example.com", excerpt="text"
+            )
+        ]
+    )
+
+
+def test_relevance_v4_renders_polish_residence_slots() -> None:
+    prompt = _render_v4(_profile("PL"))
+
+    assert "B. POLAND AS IT AFFECTS FOREIGN RESIDENTS" in prompt
+    assert "karta pobytu" in prompt
+    assert "cudzoziemcy" in prompt
+    assert "NBP" in prompt
+    assert "PLN" in prompt
+    assert "KNF" in prompt
+    assert "C. UA-PL BILATERAL" in prompt
+
+
+@pytest.mark.parametrize("country_code", [None, "ZZ"])
+def test_relevance_v4_unknown_residence_keeps_ua_tier_without_residence_categories(
+    country_code: str | None,
+) -> None:
+    prompt = _render_v4(_profile(country_code, location="Unknown place"))
+
+    assert "A. UKRAINE" in prompt
+    assert "Ukrainian government / parliament / presidency" in prompt
+    assert "B." not in prompt
+    assert "C." not in prompt
+    assert "ZZ" not in prompt
+    assert "Unknown place" not in prompt
+    assert (
+        "do not reject an article merely because its reported development occurs outside Ukraine"
+        in prompt
+    )
+
+
+def test_relevance_v4_empty_country_slots_render_generic_category() -> None:
+    prompt = _render_v4(_profile("DE", location="Germany"))
+
+    assert "B. GERMANY AS IT AFFECTS FOREIGN RESIDENTS" in prompt
+    assert "News about Germany insofar as it affects foreign residents" in prompt
+    assert "C. UA-DE BILATERAL" in prompt
+    assert "retail algorithmic trading" not in prompt
+
+
+@pytest.mark.parametrize("country_code", ["PL", "DE", None, "ZZ"])
+def test_relevance_v4_preserves_cohort_wide_safety_blocks(country_code: str | None) -> None:
+    prompt = _render_v4(_profile(country_code))
+
+    assert "STEP 2 — SIGNIFICANCE FILTER" in prompt
+    assert "GROUNDING RULES" in prompt
+    assert "ANTI-PATTERNS" in prompt
+    assert "retail algorithmic trading" not in prompt
+
+
+def test_relevance_stage_defaults_to_v3() -> None:
+    stage = RelevanceStage(
+        FakeLLMClient(RelevanceVerdict(relevant=False, categories=[], why="test", confidence=1.0)),
+        _profile("PL"),
+        "gpt-4o-mini",
+    )
+
+    assert stage.version == "v3"
+    assert "USER'S PROFESSION (retail algorithmic trading)" in stage.render([])
+
+
+@pytest.mark.asyncio
+async def test_comparison_command_writes_no_decisions(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    event = await _create_event_with_article(db_session, "comparison")
+
+    class ComparingClient(FakeLLMClient):
+        async def call_structured(
+            self,
+            *,
+            model: str,
+            system: str,
+            prompt: str,
+            output_schema: type[RelevanceVerdict],
+            max_tokens: int = 1024,
+        ) -> LLMResponse[RelevanceVerdict]:
+            relevant = "USER'S PROFESSION" not in prompt
+            self.verdict = RelevanceVerdict(
+                relevant=relevant,
+                categories=["Major EU policy decisions"] if relevant else [],
+                why="v4" if relevant else "v3",
+                confidence=1.0,
+            )
+            return await super().call_structured(
+                model=model,
+                system=system,
+                prompt=prompt,
+                output_schema=output_schema,
+                max_tokens=max_tokens,
+            )
+
+    @asynccontextmanager
+    async def current_session() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    async def candidates(*_args: object, **_kwargs: object) -> list[EventDTO]:
+        return [EventDTO.model_validate(event)]
+
+    async def profile(*_args: object, **_kwargs: object) -> Profile:
+        return _profile("PL")
+
+    client = ComparingClient(
+        RelevanceVerdict(relevant=False, categories=[], why="initial", confidence=1.0)
+    )
+    monkeypatch.setattr(compare_relevance, "session_scope", current_session)
+    monkeypatch.setattr(compare_relevance, "load_comparison_candidates", candidates)
+    monkeypatch.setattr(compare_relevance, "resolve_profile", profile)
+    monkeypatch.setattr(compare_relevance, "make_llm_client", lambda _settings: client)
+    before = await db_session.scalar(select(func.count()).select_from(Decision))
+
+    await compare_relevance.compare_relevance_command(limit=1, profile="volodymyr")
+
+    after = await db_session.scalar(select(func.count()).select_from(Decision))
+    assert after == before
 
 
 def _context(session: AsyncSession) -> Context:
