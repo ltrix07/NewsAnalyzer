@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from pydantic import ValidationError
 from sqlalchemy import delete
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -86,5 +86,11 @@ async def db_session() -> AsyncIterator[AsyncSession]:
                     await transaction.rollback()
         finally:
             await engine.dispose()
-    except (OperationalError, RuntimeError, ValidationError) as exc:
+    except OperationalError as exc:
+        if os.getenv("REQUIRE_DB_TESTS") == "1":
+            raise
         pytest.skip(f"Database is not reachable: {exc}")
+    except RuntimeError:
+        if os.getenv("REQUIRE_DB_TESTS") == "1":
+            raise
+        pytest.skip("DATABASE_URL is not configured")
