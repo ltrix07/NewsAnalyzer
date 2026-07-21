@@ -12,9 +12,14 @@ chat_id (handlers.py:87 returns early for unknown chats) and the account would n
 fresh `engine users invite`. Keeping the row preserves the invite; only the profile is
 revoked. `enabled` is left untouched.
 
+Uses raw SQL against only the long-standing columns (id, username, chat_id, profile,
+enabled). It deliberately does NOT go through the `User` ORM model: on a server whose
+schema predates the delivery-schedule migration, the model selects columns
+(users.timezone, ...) that do not exist yet and every query raises UndefinedColumnError.
+Raw SQL sidesteps that drift so this can run before the migration is applied.
+
 Runs against whatever DATABASE_URL the environment provides (same resolution the
-listener uses), so invoke it with the SAME environment you run the listener with, so it
-targets the DB where the account actually lives.
+listener uses).
 
 Read-only when called with no username (prints the user list). Mutating only with
 --username, and only for that one row.
@@ -28,50 +33,58 @@ Read-only when called with no username (prints the user list). Mutating only wit
 import argparse
 import asyncio
 
-from sqlalchemy import delete, select
+from sqlalchemy import text
 
 from engine.db import session_scope
-from engine.models import OnboardingState, User
 
 
 async def list_users() -> None:
     async with session_scope() as session:
-        users = (await session.execute(select(User).order_by(User.id))).scalars().all()
-        if not users:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT id, username, chat_id, (profile IS NULL) AS profile_null, enabled "
+                    "FROM users ORDER BY id"
+                )
+            )
+        ).all()
+        if not rows:
             print("(no users in this database)")
             return
         print("id  username             chat_id       profile_null  enabled")
-        for u in users:
+        for r in rows:
             print(
-                f"{u.id:<3} {u.username:<20} {str(u.chat_id):<13} "
-                f"{str(u.profile is None):<13} {u.enabled}"
+                f"{r.id:<3} {r.username:<20} {str(r.chat_id):<13} "
+                f"{str(r.profile_null):<13} {r.enabled}"
             )
 
 
 async def revoke(username: str) -> None:
     async with session_scope() as session:
-        user = (
-            await session.execute(select(User).where(User.username == username))
-        ).scalar_one_or_none()
-        if user is None:
+        row = (
+            await session.execute(
+                text(
+                    "UPDATE users SET profile = NULL WHERE username = :u "
+                    "RETURNING chat_id, (profile IS NULL) AS profile_null"
+                ),
+                {"u": username},
+            )
+        ).first()
+        if row is None:
             print(f"no such user: {username!r} — run without --username to list them")
             return
-        print(
-            f"before: username={user.username} chat_id={user.chat_id} "
-            f"profile_null={user.profile is None} enabled={user.enabled}"
-        )
-        user.profile = None
+        chat_id = row.chat_id
         deleted = 0
-        if user.chat_id is not None:
+        if chat_id is not None:
             result = await session.execute(
-                delete(OnboardingState).where(OnboardingState.chat_id == user.chat_id)
+                text("DELETE FROM onboarding_state WHERE chat_id = :cid"),
+                {"cid": chat_id},
             )
             deleted = result.rowcount or 0
-        await session.flush()
         print(
-            f"revoked: profile set to NULL, {deleted} onboarding_state row(s) deleted "
-            f"for chat_id={user.chat_id}. Next message from this chat restarts the "
-            f"questionnaire from step 0."
+            f"revoked username={username}: profile set to NULL, "
+            f"{deleted} onboarding_state row(s) deleted for chat_id={chat_id}. "
+            f"Next message from this chat restarts the questionnaire from step 0."
         )
 
 
